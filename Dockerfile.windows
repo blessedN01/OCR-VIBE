@@ -1,0 +1,40 @@
+# Dockerfile for building OCR app for Windows using wine
+FROM scottyhardy/docker-wine:latest
+
+# Set environment variables for wine
+ENV WINEARCH=win64
+ENV WINEPREFIX=/wine
+
+# Install Python in wine
+USER root
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install Python for Windows
+RUN wget -q https://www.python.org/ftp/python/3.9.7/python-3.9.7-amd64.exe -O /tmp/python.exe
+
+# Install Python silently in wine
+RUN xvfb-run -a wine /tmp/python.exe /quiet /passive InstallAllUsers=1 PrependPath=1 && \
+    wineserver -w
+
+# Add Python to PATH
+ENV PATH="/wine/drive_c/Python39:/wine/drive_c/Python39/Scripts:$PATH"
+
+# Install pip in wine
+RUN wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py && \
+    xvfb-run -a wine python /tmp/get-pip.py && \
+    wineserver -w
+
+# Set working directory
+WORKDIR /app
+
+# Copy project files
+COPY . .
+
+# Make build.sh executable
+RUN chmod +x build.sh
+
+# Run the build script (it will detect Windows and build accordingly)
+CMD ["./build.sh"]
