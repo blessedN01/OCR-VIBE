@@ -1,0 +1,23 @@
+# Core dependencies (required)
+pillow>=9.0.0
+numpy>=1.21.0
+opencv-python>=4.6.0
+
+# OCR engines (at least one required)
+easyocr>=1.7.0
+# pytesseract>=0.3.10  # Alternative OCR engine (requires system Tesseract installation)
+
+# PDF processing (at least one PDF library required)
+pdfplumber>=0.7.0
+PyPDF2>=3.0.0
+PyMuPDF>=1.22.0
+pdf2image>=1.17.0
+
+# GUI Framework (optional - GUI works without drag-and-drop)
+tkinterdnd2>=0.3.0
+
+# CLI Interface (optional - only needed for command-line usage)
+click>=8.1.0
+
+# Cross-platform packaging (optional - only needed for building executables)
+pyinstaller>=5.10.0
