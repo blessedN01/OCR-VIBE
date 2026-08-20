@@ -162,20 +162,20 @@ fi
 
 # Copy executables
 if [ "$PLATFORM_NAME" = "windows" ]; then
-    if [ ! -f "dist/OCR_Text_Extractor.exe" ]; then
-        print_error "GUI executable not found: dist/OCR_Text_Extractor.exe"
+    if [ ! -d "dist/OCR_Text_Extractor" ]; then
+        print_error "GUI executable directory not found: dist/OCR_Text_Extractor"
         exit 1
     fi
-    if ! cp dist/OCR_Text_Extractor.exe "$DIST_DIR/"; then
-        print_error "Failed to copy GUI executable"
+    if ! cp -r dist/OCR_Text_Extractor "$DIST_DIR/"; then
+        print_error "Failed to copy GUI executable directory"
         exit 1
     fi
-    if [ ! -f "dist/OCR_Text_Extractor_CLI.exe" ]; then
-        print_error "CLI executable not found: dist/OCR_Text_Extractor_CLI.exe"
+    if [ ! -d "dist/OCR_Text_Extractor_CLI" ]; then
+        print_error "CLI executable directory not found: dist/OCR_Text_Extractor_CLI"
         exit 1
     fi
-    if ! cp dist/OCR_Text_Extractor_CLI.exe "$DIST_DIR/"; then
-        print_error "Failed to copy CLI executable"
+    if ! cp -r dist/OCR_Text_Extractor_CLI "$DIST_DIR/"; then
+        print_error "Failed to copy CLI executable directory"
         exit 1
     fi
 else
@@ -211,13 +211,13 @@ if [ "$PLATFORM_NAME" = "windows" ]; then
     cat > "$DIST_DIR/run_gui.bat" << 'EOF'
 @echo off
 REM Run OCR Text Extractor GUI
-"%~dp0OCR_Text_Extractor.exe"
+"%~dp0OCR_Text_Extractor\OCR_Text_Extractor.exe"
 EOF
 
     cat > "$DIST_DIR/run_cli.bat" << 'EOF'
 @echo off
 REM Run OCR Text Extractor CLI
-"%~dp0OCR_Text_Extractor_CLI.exe" %*
+"%~dp0OCR_Text_Extractor_CLI\OCR_Text_Extractor_CLI.exe" %*
 EOF
 else
     # Unix-like shell scripts

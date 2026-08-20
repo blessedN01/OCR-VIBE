@@ -8,6 +8,8 @@ using OpenCV and Pillow, and supports multiple languages with confidence thresho
 """
 
 import logging
+import sys
+import os
 import time
 from typing import List, Optional, Tuple, Union
 from pathlib import Path
@@ -59,6 +61,31 @@ from .memory_manager import MemoryManager, ResourceManager, memory_limited
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+
+def _get_easyocr_cache_dir() -> str:
+    """
+    Get a writable cache directory for EasyOCR models.
+
+    In a PyInstaller bundle, uses a directory next to the executable or APPDATA.
+    Otherwise, uses the default EasyOCR cache location.
+    """
+    # Check if running in PyInstaller bundle
+    if getattr(sys, 'frozen', False):
+        # Running in a bundle
+        if sys.platform == 'win32':
+            # Use APPDATA on Windows
+            cache_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'OCR-VIBE', 'easyocr_models')
+        else:
+            # Use ~/.ocr-vibe on Unix
+            cache_dir = os.path.join(os.path.expanduser('~'), '.ocr-vibe', 'easyocr_models')
+    else:
+        # Running in development, use default EasyOCR location
+        cache_dir = os.path.join(os.path.expanduser('~'), '.EasyOCR', 'model')
+
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
 
 
 class OCREngine:
@@ -119,7 +146,8 @@ class OCREngine:
                 self.easyocr_reader = easyocr.Reader(
                     self.languages,
                     gpu=self.use_gpu,
-                    verbose=False
+                    verbose=False,
+                    model_storage_directory=_get_easyocr_cache_dir()
                 )
                 self.resource_manager.add_resource(self.easyocr_reader)
                 logger.info(f"EasyOCR initialized with languages: {self.languages}")

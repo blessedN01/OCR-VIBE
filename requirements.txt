@@ -1,23 +1,37 @@
+# OCR-VIBE Requirements
+# Install with: pip install -r requirements.txt
+
+# ============================================
 # Core dependencies (required)
-pillow>=9.0.0
+# ============================================
 numpy>=1.21.0
-opencv-python>=4.6.0
+pillow>=8.0.0
+opencv-python>=4.5.0
+psutil>=5.8.0
 
-# OCR engines (at least one required)
-easyocr>=1.7.0
-# pytesseract>=0.3.10  # Alternative OCR engine (requires system Tesseract installation)
+# ============================================
+# OCR engines
+# ============================================
+easyocr>=1.6.0
 
-# PDF processing (at least one PDF library required)
-pdfplumber>=0.7.0
-PyPDF2>=3.0.0
-PyMuPDF>=1.22.0
-pdf2image>=1.17.0
+# Tesseract OCR (fallback engine; also requires system Tesseract installation)
+pytesseract>=0.3.9
 
-# GUI Framework (optional - GUI works without drag-and-drop)
+# ============================================
+# PDF processing
+# ============================================
+pdfplumber>=0.6.0
+PyPDF2>=2.0.0
+PyMuPDF>=1.18.0
+pdf2image>=1.16.0
+
+# ============================================
+# CLI framework
+# ============================================
+click>=8.0.0
+
+# ============================================
+# GUI enhancements
+# ============================================
 tkinterdnd2>=0.3.0
-
-# CLI Interface (optional - only needed for command-line usage)
-click>=8.1.0
-
-# Cross-platform packaging (optional - only needed for building executables)
-pyinstaller>=5.10.0
+pyinstaller
