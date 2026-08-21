@@ -14,7 +14,7 @@ Libraries used:
 """
 
 import logging
-from typing import List, Optional, Tuple, Union, Dict
+from typing import List, Optional, Tuple, Union, Dict, Any
 from pathlib import Path
 import tempfile
 import os
@@ -56,6 +56,13 @@ try:
 except ImportError:
     PILLOW_AVAILABLE = False
     logging.error("Pillow is required for image processing. Install with: pip install pillow")
+
+try:
+    import camelot
+    CAMELOT_AVAILABLE = True
+except ImportError:
+    CAMELOT_AVAILABLE = False
+    logging.warning("camelot-py not installed. Table extraction will be unavailable. Install with: pip install camelot-py[cv]")
 
 # Import custom modules
 from .ocr_engine import OCREngine
@@ -306,13 +313,15 @@ class PDFHandler:
                     details={'suggestion': "Ensure pdf2image and poppler-utils are properly installed"}
                 )
 
-    def process_image_pdf_with_ocr(self, pdf_path: Union[str, Path], engine: Optional[str] = None) -> str:
+    def process_image_pdf_with_ocr(self, pdf_path: Union[str, Path], engine: Optional[str] = None,
+                                    pages: Optional[List[int]] = None) -> str:
         """
         Process image-based PDF using OCR with memory management and error handling.
 
         Args:
             pdf_path: Path to PDF file
             engine: Specific OCR engine to use
+            pages: Optional list of 1-based page numbers to process
 
         Returns:
             Extracted text from all pages
@@ -323,8 +332,11 @@ class PDFHandler:
         try:
             images = self.extract_images_from_pdf(pdf_path)
             full_text = []
+            page_set = set(pages) if pages else None
 
             for i, image in enumerate(images):
+                if page_set is not None and (i + 1) not in page_set:
+                    continue
                 try:
                     logger.info(f"Processing page {i + 1}/{len(images)}")
                     with self.memory_manager.memory_context(f"OCR page {i + 1}"):
@@ -349,13 +361,15 @@ class PDFHandler:
                 original_error=e
             )
 
-    def extract_text(self, pdf_path: Union[str, Path], engine: Optional[str] = None) -> str:
+    def extract_text(self, pdf_path: Union[str, Path], engine: Optional[str] = None,
+                     pages: Optional[List[int]] = None) -> str:
         """
         Extract text from PDF, automatically detecting type and using appropriate method.
 
         Args:
             pdf_path: Path to PDF file
             engine: Specific OCR engine to use
+            pages: Optional list of 1-based page numbers to extract
 
         Returns:
             Extracted text
@@ -372,14 +386,36 @@ class PDFHandler:
             )
 
         try:
-            # Detect PDF type
             pdf_type = self.detect_pdf_type(pdf_path)
             logger.info(f"Detected PDF type: {pdf_type}")
 
             if pdf_type == 'text':
-                return self.extract_text_from_text_pdf(pdf_path)
+                if not PDFPLUMBER_AVAILABLE:
+                    raise PDFProcessingError(
+                        file_path=str(pdf_path),
+                        operation="text extraction",
+                        details={'suggestion': "Install pdfplumber with: pip install pdfplumber"}
+                    )
+
+                page_texts = []
+                with pdfplumber.open(pdf_path) as pdf:
+                    self.resource_manager.add_resource(pdf)
+                    page_set = set(pages) if pages else None
+                    for page_num, page in enumerate(pdf.pages):
+                        if page_set is not None and (page_num + 1) not in page_set:
+                            continue
+                        try:
+                            text = page.extract_text()
+                            if text:
+                                page_texts.append(text)
+                        except Exception as e:
+                            logger.warning(f"Error extracting text from page {page_num + 1}: {e}")
+                            continue
+
+                return '\n\n'.join(page_texts)
+
             elif pdf_type == 'image':
-                return self.process_image_pdf_with_ocr(pdf_path, engine)
+                return self.process_image_pdf_with_ocr(pdf_path, engine, pages)
             else:
                 raise PDFProcessingError(
                     file_path=str(pdf_path),
@@ -435,16 +471,18 @@ class PDFHandler:
                 details={'suggestion': "Install at least one PDF library: pip install PyPDF2 or pip install PyMuPDF"}
             )
 
-    def extract_text_by_page(self, pdf_path: Union[str, Path], engine: Optional[str] = None) -> List[str]:
+    def extract_text_by_page(self, pdf_path: Union[str, Path], engine: Optional[str] = None,
+                             pages: Optional[List[int]] = None) -> List[str]:
         """
         Extract text from each page separately with error handling.
 
         Args:
             pdf_path: Path to PDF file
             engine: Specific OCR engine to use
+            pages: Optional list of 1-based page numbers to extract. If None, extracts all pages.
 
         Returns:
-            List of text strings, one per page
+            List of text strings, one per page (only for requested pages if pages is specified)
 
         Raises:
             PDFProcessingError: If extraction fails
@@ -456,6 +494,8 @@ class PDFHandler:
                 operation="page extraction",
                 details={'suggestion': "Ensure PDF file exists and path is correct"}
             )
+
+        page_set = set(pages) if pages else None
 
         with self.memory_manager.memory_context("PDF page-by-page extraction"):
             try:
@@ -472,7 +512,10 @@ class PDFHandler:
 
                     with pdfplumber.open(pdf_path) as pdf:
                         self.resource_manager.add_resource(pdf)
-                        for page in pdf.pages:
+                        for page_num, page in enumerate(pdf.pages):
+                            if page_set is not None and (page_num + 1) not in page_set:
+                                page_texts.append("")
+                                continue
                             try:
                                 text = page.extract_text() or ""
                                 page_texts.append(text)
@@ -483,6 +526,9 @@ class PDFHandler:
                 elif pdf_type == 'image':
                     images = self.extract_images_from_pdf(pdf_path)
                     for i, image in enumerate(images):
+                        if page_set is not None and (i + 1) not in page_set:
+                            page_texts.append("")
+                            continue
                         try:
                             with self.memory_manager.memory_context(f"OCR page {i + 1}"):
                                 text, _ = self.ocr_engine.extract_text(image, engine)
@@ -503,6 +549,182 @@ class PDFHandler:
                     file_path=str(pdf_path),
                     operation="page extraction",
                     original_error=e
+                )
+
+    def extract_tables(self, pdf_path: Union[str, Path],
+                       pages: Optional[str] = None,
+                       flavor: str = 'stream') -> List[Any]:
+        """
+        Extract tables from a PDF using camelot-py.
+
+        Uses the 'stream' flavor by default (OpenCV-based), which avoids
+        the need for Ghostscript or Java system dependencies.
+
+        Args:
+            pdf_path: Path to PDF file
+            pages: Page range string (e.g., '1-3,5') or None for all pages
+            flavor: 'stream' (default, for PDFMiner-based extraction) or
+                    'lattice' (for lines-based extraction)
+
+        Returns:
+            List of camelot Table objects
+
+        Raises:
+            PDFProcessingError: If table extraction fails or camelot is not installed
+        """
+        if not CAMELOT_AVAILABLE:
+            raise PDFProcessingError(
+                file_path=str(pdf_path),
+                operation="table extraction",
+                details={'suggestion': "Install camelot-py with: pip install camelot-py[cv]"}
+            )
+
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise PDFProcessingError(
+                file_path=str(pdf_path),
+                operation="table extraction",
+                details={'suggestion': "Ensure PDF file exists and path is correct"}
+            )
+
+        with self.memory_manager.memory_context("PDF table extraction"):
+            try:
+                tables = camelot.read_pdf(
+                    str(pdf_path),
+                    pages=pages if pages else 'all',
+                    flavor=flavor,
+                )
+                logger.info(f"Extracted {len(tables)} tables from {pdf_path.name}")
+                return [tables[i] for i in range(len(tables))]
+            except FileNotFoundError as e:
+                raise PDFProcessingError(
+                    file_path=str(pdf_path),
+                    operation="table extraction",
+                    original_error=e,
+                    details={'suggestion': "Ensure PDF file exists and path is correct"}
+                )
+            except Exception as e:
+                raise PDFProcessingError(
+                    file_path=str(pdf_path),
+                    operation="table extraction",
+                    original_error=e,
+                    details={'suggestion': "PDF may not contain extractable tables or is in an unsupported format"}
+                )
+
+    def generate_searchable_pdf(self, pdf_path: Union[str, Path],
+                                ocr_engine: OCREngine,
+                                pages: Optional[List[int]] = None,
+                                output_path: Optional[Union[str, Path]] = None) -> str:
+        """
+        Generate a searchable PDF with an embedded OCR text layer using PyMuPDF.
+
+        The text layer is invisible but searchable. The original page images
+        are preserved as the visual background.
+
+        Args:
+            pdf_path: Path to the input PDF
+            ocr_engine: OCREngine instance to use for OCR
+            pages: Optional list of 1-based page numbers to process
+            output_path: Output path for the searchable PDF (defaults to
+                         '<original_name>_searchable.pdf')
+
+        Returns:
+            Path to the generated searchable PDF
+
+        Raises:
+            PDFProcessingError: If searchable PDF generation fails
+        """
+        if not PYMUPDF_AVAILABLE:
+            raise PDFProcessingError(
+                file_path=str(pdf_path),
+                operation="searchable PDF generation",
+                details={'suggestion': "Install PyMuPDF with: pip install PyMuPDF"}
+            )
+
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise PDFProcessingError(
+                file_path=str(pdf_path),
+                operation="searchable PDF generation",
+                details={'suggestion': "Ensure PDF file exists and path is correct"}
+            )
+
+        if output_path is None:
+            output_path = str(pdf_path.with_name(pdf_path.stem + '_searchable.pdf'))
+        else:
+            output_path = str(output_path)
+
+        with self.memory_manager.memory_context("searchable PDF generation"):
+            try:
+                doc = fitz.open(str(pdf_path))
+                self.resource_manager.add_resource(doc, lambda d: d.close())
+
+                page_set = set(pages) if pages else None
+
+                for page_num in range(len(doc)):
+                    if page_set is not None and (page_num + 1) not in page_set:
+                        continue
+
+                    page = doc[page_num]
+
+                    # Get the page pixmap (image)
+                    pix = page.get_pixmap(dpi=150)
+                    if pix is None:
+                        continue
+
+                    # Convert pixmap to PIL Image for OCR
+                    if PILLOW_AVAILABLE:
+                        mode = "RGBA" if pix.alpha else "RGB"
+                        img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+                        if mode == "RGBA":
+                            img = img.convert("RGB")
+                    else:
+                        import numpy as _np
+                        img = _np.frombuffer(pix.samples, dtype=_np.uint8).reshape(
+                            pix.height, pix.width, pix.n
+                        )
+                        img = Image.fromarray(img, mode='RGB' if pix.n == 3 else 'RGBA').convert('RGB')
+
+                    # Run OCR on the page image
+                    text, _ = ocr_engine.extract_text(img, file_type='pdf', page_count=1)
+
+                    # Get page dimensions for text positioning
+                    page_rect = page.rect
+
+                    if text and text.strip():
+                        # Insert an invisible text layer (searchable text)
+                        # Using insert_textbox on a new text block
+                        text_writer = fitz.TextWriter(page.rect.br.x, page.rect.br.y)
+                        text_writer.append_textbox(
+                            page.rect,
+                            text,
+                            fontsize=10,
+                            fontname="helv",
+                            fill_opacity=0.0,
+                        )
+                        page.add_text_writer(text_writer, color=(1, 1, 1), opacity=0)
+
+                    pix = None
+
+                doc.save(output_path, garbage=4, deflate=True, clean_text=True)
+                doc.close()
+
+                logger.info(f"Searchable PDF saved to {output_path}")
+                return output_path
+
+            except fitz.FitzError as e:
+                raise PDFProcessingError(
+                    file_path=str(pdf_path),
+                    operation="searchable PDF generation",
+                    original_error=e,
+                    details={'suggestion': "Ensure PyMuPDF is properly installed and the PDF is not corrupted."}
+                )
+            except Exception as e:
+                raise PDFProcessingError(
+                    file_path=str(pdf_path),
+                    operation="searchable PDF generation",
+                    original_error=e,
+                    details={'suggestion': "Check system resources and PDF integrity."}
                 )
 
 

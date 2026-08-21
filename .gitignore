@@ -49,12 +49,6 @@ htmlcov/
 *.dll
 *.so
 *.dylib
-build_all.sh
-build.sh
-
-# Docker
-Dockerfile.linux
-Dockerfile.windows
 
 # OCR / PDF temp files
 *.tmp
