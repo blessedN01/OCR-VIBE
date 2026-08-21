@@ -1,8 +1,4 @@
 # OCR-VIBE Optional Requirements
 # Install with: pip install -r requirements-optional.txt
-# Or install all extras: pip install ocr-vibe[all]
 
-# ============================================
-# Additional output formats
-# ============================================
 python-docx>=0.8.11

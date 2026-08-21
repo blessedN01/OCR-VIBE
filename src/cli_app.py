@@ -44,7 +44,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 # Version information
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 
 
 def parse_page_ranges(page_spec: str) -> List[int]:
@@ -109,20 +109,34 @@ class OutputFormatter:
         output_lines.append("text,confidence,x1,y1,x2,y2,x3,y3")
 
         for result in results:
-            if len(result) >= 3:
+            # Handle both dict and tuple formats
+            if isinstance(result, dict):
+                text_part = str(result.get('text', '')).replace('"', '""')
+                confidence = result.get('confidence', 0.0)
+                bbox = result.get('bbox', [])
+                if bbox and len(bbox) >= 4:
+                    x1, y1 = bbox[0]
+                    x2, y2 = bbox[1]
+                    x3, y3 = bbox[2]
+                    output_lines.append(f'"{text_part}",{confidence},{x1},{y1},{x2},{y2},{x3},{y3}')
+                else:
+                    output_lines.append(f'"{text_part}",{confidence},,,,,,')
+            elif len(result) >= 3:
                 coords = result[0]
                 if len(coords) == 4:
                     x1, y1 = coords[0]
                     x2, y2 = coords[1]
                     x3, y3 = coords[2]
                     x4, y4 = coords[3]
-                    text_part = result[1].replace('"', '""')
+                    text_part = str(result[1]).replace('"', '""')
                     confidence = result[2]
                     output_lines.append(f'"{text_part}",{confidence},{x1},{y1},{x2},{y2},{x3},{y3}')
                 else:
-                    text_part = str(result.get('text', '')).replace('"', '""')
-                    confidence = result.get('confidence', 0.0)
+                    text_part = str(result[1]).replace('"', '""')
+                    confidence = result[2]
                     output_lines.append(f'"{text_part}",{confidence},,,,,,')
+            else:
+                continue
 
         return "\n".join(output_lines)
 
@@ -145,6 +159,84 @@ class OutputFormatter:
         lines.append("```")
         lines.append(text)
         lines.append("```")
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_docx(text: str, metadata: Optional[Dict[str, Any]] = None, output_path: Optional[Path] = None) -> str:
+        """Format as DOCX (Word document)."""
+        try:
+            from docx import Document
+            from docx.shared import Pt, Inches
+            DOCX_AVAILABLE = True
+        except ImportError:
+            DOCX_AVAILABLE = False
+
+        if not DOCX_AVAILABLE:
+            raise ImportError("python-docx is not installed. Install with: pip install python-docx")
+
+        doc = Document()
+
+        if metadata:
+            doc.add_heading('OCR Results', level=1)
+            doc.add_heading('Metadata', level=2)
+            for key, value in metadata.items():
+                doc.add_paragraph(f"{key}: {value}")
+            doc.add_heading('Extracted Text', level=2)
+
+        doc.add_paragraph(text)
+
+        if output_path:
+            doc.save(str(output_path))
+            return str(output_path)
+        return ""
+
+    @staticmethod
+    def format_html(text: str, results: List[Dict], metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Format as annotated HTML with confidence-colored bounding box overlays."""
+        lines = []
+        lines.append("<!DOCTYPE html>")
+        lines.append("<html lang='en'>")
+        lines.append("<head>")
+        lines.append("<meta charset='UTF-8'>")
+        lines.append("<title>OCR Results</title>")
+        lines.append("<style>")
+        lines.append("body { font-family: Arial, sans-serif; margin: 20px; }")
+        lines.append(".result-item { display: inline-block; margin: 2px; padding: 2px 4px; border-radius: 3px; }")
+        lines.append(".high-conf { background-color: #d4edda; color: #155724; }")
+        lines.append(".medium-conf { background-color: #fff3cd; color: #856404; }")
+        lines.append(".low-conf { background-color: #f8d7da; color: #721c24; }")
+        lines.append("</style>")
+        lines.append("</head>")
+        lines.append("<body>")
+        lines.append("<h1>OCR Results</h1>")
+
+        if metadata:
+            lines.append("<h2>Metadata</h2>")
+            lines.append("<ul>")
+            for key, value in metadata.items():
+                lines.append(f"<li><strong>{key}</strong>: {value}</li>")
+            lines.append("</ul>")
+
+        lines.append("<h2>Extracted Text</h2>")
+        lines.append("<div class='ocr-results'>")
+
+        if results:
+            for result in results:
+                confidence = result.get('confidence', 0.0)
+                text_part = result.get('text', '')
+                if confidence >= 0.7:
+                    css_class = 'high-conf'
+                elif confidence >= 0.4:
+                    css_class = 'medium-conf'
+                else:
+                    css_class = 'low-conf'
+                lines.append(f"<span class='result-item {css_class}' title='Confidence: {confidence:.2f}'>{text_part}</span>")
+        else:
+            lines.append(f"<p>{text}</p>")
+
+        lines.append("</div>")
+        lines.append("</body>")
+        lines.append("</html>")
         return "\n".join(lines)
 
 
@@ -236,6 +328,14 @@ def _process_single_file_task(args: Tuple[Path, dict, Optional[str]]) -> Tuple[P
             content = OutputFormatter.format_csv(text, results, metadata)
         elif output_format == 'md':
             content = OutputFormatter.format_md(text, metadata)
+        elif output_format == 'docx':
+            if config.get('_output_file'):
+                OutputFormatter.format_docx(text, metadata, config.get('_output_file'))
+                return (file_path, True)
+            else:
+                raise ValueError("DOCX format requires an output file path (-o)")
+        elif output_format == 'html':
+            content = OutputFormatter.format_html(text, results, metadata)
         else:
             raise ValueError(f"Unsupported output format: {output_format}")
 
@@ -367,6 +467,14 @@ def process_single_file(file_path: Path, ocr_engine: OCREngine, pdf_handler: PDF
             content = OutputFormatter.format_csv(text, results, metadata)
         elif output_format == 'md':
             content = OutputFormatter.format_md(text, metadata)
+        elif output_format == 'docx':
+            if output_path:
+                OutputFormatter.format_docx(text, metadata, output_path)
+                return True
+            else:
+                raise ValueError("DOCX format requires an output file path (-o)")
+        elif output_format == 'html':
+            content = OutputFormatter.format_html(text, results, metadata)
         else:
             raise ValueError(f"Unsupported output format: {output_format}")
 
@@ -584,7 +692,7 @@ def _get_ocr_engine(config: dict) -> OCREngine:
               help='Confidence threshold (0.0-1.0)')
 @click.option('--output', '-o', type=click.Path(path_type=Path),
               help='Output file path')
-@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md']), default=None,
+@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md', 'docx', 'html']), default=None,
               help='Output format')
 @click.option('--engine', type=click.Choice(['easyocr', 'paddleocr', 'tesseract']), default=None,
               help='Force specific OCR engine')
@@ -654,7 +762,7 @@ def process_file(file_path, languages, confidence, output, format, engine, no_pr
               help='Confidence threshold (0.0-1.0)')
 @click.option('--output-dir', '-o', type=click.Path(path_type=Path),
               help='Output directory for processed files')
-@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md']), default=None,
+@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md', 'docx', 'html']), default=None,
               help='Output format')
 @click.option('--recursive', '-r', is_flag=True, default=False,
               help='Process directories recursively')
@@ -746,7 +854,7 @@ def process_dir(directory_path, languages, confidence, output_dir, format, recur
               help='Confidence threshold (0.0-1.0)')
 @click.option('--output-dir', '-o', type=click.Path(path_type=Path),
               help='Output directory for processed files')
-@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md']), default=None,
+@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md', 'docx', 'html']), default=None,
               help='Output format')
 @click.option('--engine', type=click.Choice(['easyocr', 'paddleocr', 'tesseract']), default=None,
               help='Force specific OCR engine')
@@ -867,7 +975,7 @@ def batch_process(batch_file, languages, confidence, output_dir, format, engine,
               help='Confidence threshold (0.0-1.0)')
 @click.option('--output', '-o', type=click.Path(path_type=Path),
               help='Output file path')
-@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md']), default=None,
+@click.option('--format', '-f', type=click.Choice(['txt', 'json', 'csv', 'md', 'docx', 'html']), default=None,
               help='Output format')
 @click.option('--engine', type=click.Choice(['easyocr', 'paddleocr', 'tesseract']), default=None,
               help='Force specific OCR engine')
@@ -958,6 +1066,14 @@ def process_pdf(pdf_path, languages, confidence, output, format, engine, pages,
             content = OutputFormatter.format_csv(text, results, metadata)
         elif config['output_format'] == 'md':
             content = OutputFormatter.format_md(text, metadata)
+        elif config['output_format'] == 'docx':
+            if output:
+                OutputFormatter.format_docx(text, metadata, output)
+                return True
+            else:
+                raise ValueError("DOCX format requires an output file path (-o)")
+        elif config['output_format'] == 'html':
+            content = OutputFormatter.format_html(text, results, metadata)
         else:
             raise ValueError(f"Unsupported output format: {config['output_format']}")
 

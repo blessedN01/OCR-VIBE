@@ -769,9 +769,22 @@ class OCREngine:
 
                     text = pytesseract.image_to_string(pil_image, lang=lang, config=self.tesseract_config)
 
-                    # pytesseract doesn't provide detailed confidence per word easily
-                    # We'll return a simplified result format
-                    results = [{'text': text.strip(), 'confidence': 1.0}] if text.strip() else []
+                    # Get detailed data including bounding boxes
+                    data = pytesseract.image_to_data(pil_image, lang=lang, config=self.tesseract_config, output_type=pytesseract.Output.DICT)
+
+                    results = []
+                    n_boxes = len(data['text'])
+                    for i in range(n_boxes):
+                        word_text = data['text'][i].strip()
+                        conf = int(data['conf'][i])
+                        if word_text and conf >= 0:
+                            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+                            results.append({
+                                'text': word_text,
+                                'confidence': conf / 100.0,
+                                'bbox': [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+                            })
+
                     return text.strip(), results
 
                 except pytesseract.TesseractError as e:
@@ -1240,3 +1253,140 @@ def get_available_engines() -> List[str]:
     if TESSERACT_AVAILABLE:
         engines.append('tesseract')
     return engines
+
+
+# =============================================================================
+# Plugin System
+# =============================================================================
+
+from abc import ABC, abstractmethod
+
+
+class BaseOCREngine(ABC):
+    """
+    Abstract base class for OCR engine plugins.
+
+    Custom OCR engines can be created by subclassing BaseOCREngine and
+    implementing the required methods. Place engine plugin files in
+    ~/.ocr-vibe/engines/ for automatic discovery at startup.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Unique name for this engine."""
+        ...
+
+    @property
+    @abstractmethod
+    def supported_languages(self) -> List[str]:
+        """List of language codes supported by this engine."""
+        ...
+
+    @abstractmethod
+    def initialize(self, languages: List[str], use_gpu: bool = False, **kwargs) -> bool:
+        """
+        Initialize the engine with the given languages.
+
+        Args:
+            languages: List of language codes
+            use_gpu: Whether to use GPU acceleration
+            **kwargs: Additional engine-specific options
+
+        Returns:
+            True if initialization succeeded
+        """
+        ...
+
+    @abstractmethod
+    def extract_text(self, image: Any) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Extract text from an image.
+
+        Args:
+            image: Input image (numpy array or PIL Image)
+
+        Returns:
+            Tuple of (extracted_text, results_list)
+        """
+        ...
+
+    def cleanup(self):
+        """Release resources used by the engine."""
+        pass
+
+
+class EngineRegistry:
+    """
+    Registry for OCR engine plugins.
+
+    Supports dynamic discovery of engine plugins from ~/.ocr-vibe/engines/.
+    Each plugin file must define a `register()` function that returns a
+    BaseOCREngine instance.
+    """
+
+    _engines: Dict[str, BaseOCREngine] = {}
+
+    @classmethod
+    def register(cls, name: str, engine: BaseOCREngine):
+        """
+        Register an OCR engine plugin.
+
+        Args:
+            name: Unique engine name
+            engine: BaseOCREngine instance
+        """
+        cls._engines[name] = engine
+        logger.info(f"Registered OCR engine plugin: {name}")
+
+    @classmethod
+    def unregister(cls, name: str):
+        """Remove an engine from the registry."""
+        if name in cls._engines:
+            del cls._engines[name]
+
+    @classmethod
+    def get(cls, name: str) -> Optional[BaseOCREngine]:
+        """Get a registered engine by name."""
+        return cls._engines.get(name)
+
+    @classmethod
+    def get_all(cls) -> Dict[str, BaseOCREngine]:
+        """Get all registered engines."""
+        return cls._engines.copy()
+
+    @classmethod
+    def discover(cls):
+        """
+        Scan ~/.ocr-vibe/engines/ for Python files and attempt to register them.
+
+        Each plugin file must define a `register(registry)` function or a
+        module-level `engine` variable that is a BaseOCREngine instance.
+        """
+        import importlib.util
+
+        engines_dir = Path.home() / '.ocr-vibe' / 'engines'
+        if not engines_dir.is_dir():
+            return
+
+        for plugin_file in engines_dir.glob('*.py'):
+            if plugin_file.name.startswith('_'):
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f"ocr_vibe_plugin_{plugin_file.stem}", str(plugin_file)
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                if hasattr(module, 'register'):
+                    module.register(cls)
+                elif hasattr(module, 'engine') and isinstance(module.engine, BaseOCREngine):
+                    cls.register(module.engine.name, module.engine)
+            except Exception as e:
+                logger.warning(f"Failed to load engine plugin {plugin_file.name}: {e}")
+
+    @classmethod
+    def clear(cls):
+        """Clear all registered engines."""
+        cls._engines.clear()
