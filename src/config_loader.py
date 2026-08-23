@@ -65,7 +65,6 @@ def _find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
         start_path = Path.cwd()
 
     current = start_path.resolve()
-    root = Path(current.root)
 
     while True:
         for filename in ('ocr-vibe.yaml', 'ocr-vibe.yml', 'ocr-vibe.json'):
@@ -73,7 +72,7 @@ def _find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
             if config_path.is_file():
                 return config_path
 
-        if current == root:
+        if current.parent == current:
             break
         current = current.parent
 

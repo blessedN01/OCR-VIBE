@@ -408,7 +408,7 @@ class OCRGUIApp:
         self.notebook.add(results_frame, text="Results")
 
         # Results text area
-        self.results_text = scrolledtext.ScrolledText(results_frame, wrap=tk.Word,
+        self.results_text = scrolledtext.ScrolledText(results_frame, wrap=tk.WORD,
                                                       font=("Courier", 10),
                                                       bg='#1e1e1e', fg='#d4d4d4',
                                                       insertbackground='#d4d4d4')

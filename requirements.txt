@@ -21,6 +21,7 @@ easyocr>=1.6.0
 
 # PaddleOCR (third engine; excels at CJK, complex layouts, low-quality scans)
 paddleocr>=2.7.0
+paddlepaddle>=2.7.0 # A paddleocr dependency that might not be installed automatically
 
 # Tesseract OCR (fallback engine; also requires system Tesseract installation)
 pytesseract>=0.3.9
