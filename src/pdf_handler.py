@@ -36,7 +36,7 @@ except ImportError:
     logging.error("PyPDF2 is required for PDF operations. Install with: pip install PyPDF2")
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
@@ -66,7 +66,7 @@ except ImportError:
 
 # Import custom modules
 from .ocr_engine import OCREngine
-from .exceptions import PDFProcessingError, MemoryError, ResourceCleanupError
+from .exceptions import PDFProcessingError, MemoryError
 from .memory_manager import MemoryManager, ResourceManager
 
 # Configure logging
@@ -151,8 +151,6 @@ class PDFHandler:
         with self.memory_manager.memory_context("PDF type detection"):
             try:
                 with pdfplumber.open(pdf_path) as pdf:
-                    self.resource_manager.add_resource(pdf)
-
                     # Check first page
                     if len(pdf.pages) == 0:
                         pdf_type = 'empty'
@@ -221,8 +219,6 @@ class PDFHandler:
 
             try:
                 with pdfplumber.open(pdf_path) as pdf:
-                    self.resource_manager.add_resource(pdf)
-
                     for page_num, page in enumerate(pdf.pages):
                         try:
                             text = page.extract_text()
@@ -399,7 +395,6 @@ class PDFHandler:
 
                 page_texts = []
                 with pdfplumber.open(pdf_path) as pdf:
-                    self.resource_manager.add_resource(pdf)
                     page_set = set(pages) if pages else None
                     for page_num, page in enumerate(pdf.pages):
                         if page_set is not None and (page_num + 1) not in page_set:
@@ -450,7 +445,6 @@ class PDFHandler:
                 try:
                     with open(pdf_path, 'rb') as file:
                         pdf_reader = PyPDF2.PdfReader(file)
-                        self.resource_manager.add_resource(file)
                         return len(pdf_reader.pages)
                 except Exception as e:
                     logger.warning(f"Error getting page count with PyPDF2: {e}")
@@ -458,7 +452,6 @@ class PDFHandler:
             if PYMUPDF_AVAILABLE:
                 try:
                     doc = fitz.open(pdf_path)
-                    self.resource_manager.add_resource(doc, lambda d: d.close())
                     page_count = doc.page_count
                     doc.close()
                     return page_count
@@ -499,31 +492,28 @@ class PDFHandler:
 
         with self.memory_manager.memory_context("PDF page-by-page extraction"):
             try:
-                pdf_type = self.detect_pdf_type(pdf_path)
                 page_texts = []
 
-                if pdf_type == 'text':
-                    if not PDFPLUMBER_AVAILABLE:
-                        raise PDFProcessingError(
-                            file_path=str(pdf_path),
-                            operation="text extraction",
-                            details={'suggestion': "Install pdfplumber with: pip install pdfplumber"}
-                        )
+                if PDFPLUMBER_AVAILABLE:
+                    try:
+                        with pdfplumber.open(pdf_path) as pdf:
+                            for page_num, page in enumerate(pdf.pages):
+                                if page_set is not None and (page_num + 1) not in page_set:
+                                    page_texts.append("")
+                                    continue
+                                try:
+                                    text = page.extract_text() or ""
+                                    page_texts.append(text)
+                                except Exception as e:
+                                    logger.warning(f"Error extracting text from page: {e}")
+                                    page_texts.append("")
+                        
+                        if any(page_texts):
+                            return page_texts
+                    except Exception as e:
+                        logger.warning(f"pdfplumber extraction failed: {e}")
 
-                    with pdfplumber.open(pdf_path) as pdf:
-                        self.resource_manager.add_resource(pdf)
-                        for page_num, page in enumerate(pdf.pages):
-                            if page_set is not None and (page_num + 1) not in page_set:
-                                page_texts.append("")
-                                continue
-                            try:
-                                text = page.extract_text() or ""
-                                page_texts.append(text)
-                            except Exception as e:
-                                logger.warning(f"Error extracting text from page: {e}")
-                                page_texts.append("")
-
-                elif pdf_type == 'image':
+                if PDF2IMAGE_AVAILABLE:
                     images = self.extract_images_from_pdf(pdf_path)
                     for i, image in enumerate(images):
                         if page_set is not None and (i + 1) not in page_set:
@@ -692,17 +682,14 @@ class PDFHandler:
                     page_rect = page.rect
 
                     if text and text.strip():
-                        # Insert an invisible text layer (searchable text)
-                        # Using insert_textbox on a new text block
-                        text_writer = fitz.TextWriter(page.rect.br.x, page.rect.br.y)
-                        text_writer.append_textbox(
+                        page.insert_textbox(
                             page.rect,
                             text,
-                            fontsize=10,
                             fontname="helv",
-                            fill_opacity=0.0,
+                            fontsize=10,
+                            color=(1, 1, 1),
+                            opacity=0,
                         )
-                        page.add_text_writer(text_writer, color=(1, 1, 1), opacity=0)
 
                     pix = None
 

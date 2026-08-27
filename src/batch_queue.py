@@ -186,8 +186,12 @@ class BatchQueueManager:
         self._running = False
         self.on_log("Batch processing stopped")
 
-    def clear_completed(self):
-        """Remove all completed and failed tasks from the queue."""
+    def clear_completed(self) -> List[str]:
+        """Remove all completed and failed tasks from the queue.
+        
+        Returns:
+            List of cleared task IDs
+        """
         with self._lock:
             to_remove = [
                 tid for tid, task in self._tasks.items()
@@ -196,6 +200,7 @@ class BatchQueueManager:
             for tid in to_remove:
                 del self._tasks[tid]
             self.on_log(f"Cleared {len(to_remove)} completed tasks")
+            return to_remove
 
     def clear_all(self):
         """Clear all tasks and stop processing."""
@@ -330,7 +335,7 @@ class BatchQueueManager:
 
         progress_callback(30)
 
-        text = self.pdf_handler.extract_text(task.file_path)
+        text = self.pdf_handler.extract_text(task.file_path, engine=self.config.get('engine'))
 
         progress_callback(80)
 
