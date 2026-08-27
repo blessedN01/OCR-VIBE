@@ -10,8 +10,9 @@ using OpenCV and Pillow, and supports multiple languages with confidence thresho
 import logging
 import sys
 import os
+import re
 import time
-from typing import List, Optional, Tuple, Union, Dict, Any
+from typing import List, Optional, Tuple, Union, Dict, Any, Callable
 from pathlib import Path
 try:
     import numpy as np
@@ -33,12 +34,6 @@ try:
 except ImportError:
     OPENCV_AVAILABLE = False
     logging.error("OpenCV is required for image preprocessing. Install with: pip install opencv-python")
-
-try:
-    import re
-    RE_AVAILABLE = True
-except ImportError:
-    RE_AVAILABLE = False
 
 # OCR libraries
 try:
@@ -84,7 +79,7 @@ from .exceptions import (
     OCRError, OCREngineNotAvailableError, OCREngineInitializationError,
     OCRProcessingError, ImageProcessingError, MemoryError, OCREngineFallbackError
 )
-from .memory_manager import MemoryManager, ResourceManager, memory_limited
+from .memory_manager import MemoryManager, ResourceManager
 from .stats_tracker import EngineStatsTracker
 
 # Configure logging
@@ -300,7 +295,13 @@ class OCREngine:
             try:
                 paddle_lang = self._map_to_paddleocr_lang(self.languages)
                 os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
-                self.paddleocr_reader = PaddleOCR(lang=paddle_lang)
+                # Disable oneDNN: PIR executor in paddlepaddle 3.3.1 fails with
+                # "ConvertPirAttribute2RuntimeAttribute not support
+                # [pir::ArrayAttribute<pir::DoubleAttribute>]" when MKLDNN is on.
+                self.paddleocr_reader = PaddleOCR(
+                    lang=paddle_lang,
+                    enable_mkldnn=False,
+                )
                 self.resource_manager.add_resource(self.paddleocr_reader)
                 logger.info(f"PaddleOCR initialized with language: {paddle_lang}")
                 engines_initialized += 1
@@ -329,6 +330,107 @@ class OCREngine:
             if mapped:
                 return mapped
         return 'en'
+
+    @staticmethod
+    def _normalize_bbox(value: Any) -> list:
+        """Coerce an engine-specific bbox representation to a plain nested list.
+
+        Accepts None, plain list/tuple of points, or any object with a
+        ``tolist`` method (e.g. numpy arrays, tensors). Returns a new list so
+        callers can mutate freely without affecting the original engine result.
+        """
+        if value is None:
+            return []
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        return list(value)
+
+    @staticmethod
+    def _parse_easyocr_results(raw_results: list, confidence_threshold: float) -> List[dict]:
+        """Convert EasyOCR readtext output to normalized OCR result dicts."""
+        filtered_results = []
+        for result in raw_results:
+            if len(result) >= 3 and isinstance(result[2], (int, float)) and result[2] >= confidence_threshold:
+                filtered_results.append({
+                    'text': result[1],
+                    'confidence': float(result[2]),
+                    'bbox': OCREngine._normalize_bbox(result[0]),
+                })
+        return filtered_results
+
+    @staticmethod
+    def _parse_paddleocr_results(raw_results: list, confidence_threshold: float) -> List[dict]:
+        """Convert PaddleOCR predict output to normalized OCR result dicts."""
+        filtered_results = []
+        for result in raw_results:
+            if not isinstance(result, dict):
+                continue
+            rec_texts = result.get('rec_texts', [])
+            rec_scores = result.get('rec_scores', [])
+            rec_polys = result.get('rec_polys', [])
+            for i, text in enumerate(rec_texts):
+                if i >= len(rec_scores):
+                    continue
+                confidence = float(rec_scores[i])
+                if confidence >= confidence_threshold:
+                    bbox = rec_polys[i] if i < len(rec_polys) else None
+                    filtered_results.append({
+                        'text': text,
+                        'confidence': confidence,
+                        'bbox': OCREngine._normalize_bbox(bbox),
+                    })
+        return filtered_results
+
+    @staticmethod
+    def _parse_tesseract_data(data: dict, confidence_threshold: float) -> List[dict]:
+        """Convert pytesseract image_to_data output to normalized OCR result dicts."""
+        results = []
+        n_boxes = len(data['text'])
+        for i in range(n_boxes):
+            word_text = data['text'][i].strip()
+            conf = int(data['conf'][i])
+            if word_text and conf >= 0:
+                x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+                results.append({
+                    'text': word_text,
+                    'confidence': conf / 100.0,
+                    'bbox': [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                })
+        return results
+
+    def _run_with_retries(self, engine: str, context: str,
+                          operation: Callable[[], Tuple[str, List[dict]]],
+                          final_details: Optional[Dict[str, Any]] = None) -> Tuple[str, List[dict]]:
+        """
+        Run an OCR extraction operation with retry logic and memory management.
+
+        Args:
+            engine: Engine name used in log messages and raised errors
+            context: Label for the memory manager context
+            operation: Zero-argument callable performing the extraction
+            final_details: Optional details attached to the final OCRProcessingError
+
+        Returns:
+            Tuple of (extracted_text, results_list)
+
+        Raises:
+            OCRProcessingError: If all retries fail
+        """
+        with self.memory_manager.memory_context(context):
+            for attempt in range(self.max_retries):
+                try:
+                    return operation()
+                except MemoryError:
+                    raise
+                except Exception as e:
+                    if attempt == self.max_retries - 1:
+                        raise OCRProcessingError(
+                            engine_name=engine,
+                            original_error=e,
+                            details=final_details,
+                        )
+                    logger.warning(f"{engine} attempt {attempt + 1} failed: {e}. Retrying...")
+                    time.sleep(self.retry_delay)
 
     def _get_available_engines(self) -> List[str]:
         """
@@ -593,8 +695,13 @@ class OCREngine:
         if not results or not SKLEARN_AVAILABLE:
             return ' '.join(r.get('text', '') for r in results)
 
-        # Filter results with valid bounding boxes
-        valid_results = [r for r in results if r.get('bbox') and len(r.get('bbox', [])) >= 4]
+        # Filter results with valid bounding boxes.
+        # Note: use an explicit None check — bboxes may be numpy arrays,
+        # and `array and ...` raises "truth value of an array is ambiguous".
+        valid_results = [
+            r for r in results
+            if r.get('bbox') is not None and len(r['bbox']) >= 4
+        ]
         if not valid_results:
             return ' '.join(r.get('text', '') for r in results)
 
@@ -687,43 +794,21 @@ class OCREngine:
                 details={'suggestion': "OpenCV required for EasyOCR. Install with: pip install opencv-python"}
             )
 
-        with self.memory_manager.memory_context("easyocr processing"):
-            for attempt in range(self.max_retries):
-                try:
-                    # Convert to RGB for EasyOCR
-                    if len(image.shape) == 3:
-                        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    else:
-                        rgb_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        def run() -> Tuple[str, List[dict]]:
+            # Convert to RGB for EasyOCR
+            if len(image.shape) == 3:
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-                    results = self.easyocr_reader.readtext(rgb_image, detail=1)
+            raw_results = self.easyocr_reader.readtext(rgb_image, detail=1)
+            filtered_results = self._parse_easyocr_results(raw_results, self.confidence_threshold)
 
-                    # Filter by confidence and format results
-                    filtered_results = []
-                    for result in results:
-                        if len(result) >= 3 and isinstance(result[2], (int, float)) and result[2] >= self.confidence_threshold:
-                            filtered_results.append({
-                                'text': result[1],
-                                'confidence': float(result[2]),
-                                'bbox': result[0] if len(result) > 0 else []
-                            })
+            # Extract text
+            text_parts = [r['text'] for r in filtered_results]
+            return ' '.join(text_parts), filtered_results
 
-                    # Extract text
-                    text_parts = [r['text'] for r in filtered_results]
-                    full_text = ' '.join(text_parts)
-
-                    return full_text, filtered_results
-
-                except MemoryError:
-                    raise
-                except Exception as e:
-                    if attempt == self.max_retries - 1:
-                        raise OCRProcessingError(
-                            engine_name="easyocr",
-                            original_error=e
-                        )
-                    logger.warning(f"EasyOCR attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(self.retry_delay)
+        return self._run_with_retries("easyocr", "easyocr processing", run)
 
     def extract_text_tesseract(self, image: np.ndarray) -> Tuple[str, List[dict]]:
         """
@@ -750,62 +835,33 @@ class OCREngine:
                 details={'suggestion': "Pillow required for pytesseract. Install with: pip install pillow"}
             )
 
-        with self.memory_manager.memory_context("tesseract processing"):
-            for attempt in range(self.max_retries):
-                try:
-                    # pytesseract expects PIL Image or numpy array
-                    if len(image.shape) == 3:
-                        if not OPENCV_AVAILABLE:
-                            raise OCRProcessingError(
-                                engine_name="tesseract",
-                                details={'suggestion': "OpenCV required for color conversion. Install with: pip install opencv-python"}
-                            )
-                        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-                    else:
-                        pil_image = Image.fromarray(image)
+        def run() -> Tuple[str, List[dict]]:
+            # pytesseract expects PIL Image or numpy array
+            if len(image.shape) == 3:
+                if not OPENCV_AVAILABLE:
+                    raise OCRProcessingError(
+                        engine_name="tesseract",
+                        details={'suggestion': "OpenCV required for color conversion. Install with: pip install opencv-python"}
+                    )
+                pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            else:
+                pil_image = Image.fromarray(image)
 
-                    # Configure language
-                    lang = '+'.join(self.languages) if len(self.languages) > 1 else self.languages[0]
+            # Configure language
+            lang = '+'.join(self.languages) if len(self.languages) > 1 else self.languages[0]
 
-                    text = pytesseract.image_to_string(pil_image, lang=lang, config=self.tesseract_config)
+            text = pytesseract.image_to_string(pil_image, lang=lang, config=self.tesseract_config)
 
-                    # Get detailed data including bounding boxes
-                    data = pytesseract.image_to_data(pil_image, lang=lang, config=self.tesseract_config, output_type=pytesseract.Output.DICT)
+            # Get detailed data including bounding boxes
+            data = pytesseract.image_to_data(pil_image, lang=lang, config=self.tesseract_config, output_type=pytesseract.Output.DICT)
+            results = self._parse_tesseract_data(data, self.confidence_threshold)
 
-                    results = []
-                    n_boxes = len(data['text'])
-                    for i in range(n_boxes):
-                        word_text = data['text'][i].strip()
-                        conf = int(data['conf'][i])
-                        if word_text and conf >= 0:
-                            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                            results.append({
-                                'text': word_text,
-                                'confidence': conf / 100.0,
-                                'bbox': [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
-                            })
+            return text.strip(), results
 
-                    return text.strip(), results
-
-                except pytesseract.TesseractError as e:
-                    if attempt == self.max_retries - 1:
-                        raise OCRProcessingError(
-                            engine_name="tesseract",
-                            original_error=e,
-                            details={'suggestion': "Ensure Tesseract is properly installed and language data is available."}
-                        )
-                    logger.warning(f"Tesseract attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(self.retry_delay)
-                except MemoryError:
-                    raise
-                except Exception as e:
-                    if attempt == self.max_retries - 1:
-                        raise OCRProcessingError(
-                            engine_name="tesseract",
-                            original_error=e
-                        )
-                    logger.warning(f"Tesseract attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(self.retry_delay)
+        return self._run_with_retries(
+            "tesseract", "tesseract processing", run,
+            final_details={'suggestion': "Ensure Tesseract is properly installed and language data are available."},
+        )
 
     def extract_text_paddleocr(self, image: np.ndarray) -> Tuple[str, List[dict]]:
         """
@@ -834,55 +890,23 @@ class OCREngine:
                 details={'suggestion': "OpenCV required for PaddleOCR. Install with: pip install opencv-python"}
             )
 
-        with self.memory_manager.memory_context("paddleocr processing"):
-            for attempt in range(self.max_retries):
-                try:
-                    # Convert to RGB for PaddleOCR
-                    if len(image.shape) == 3:
-                        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    else:
-                        rgb_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        def run() -> Tuple[str, List[dict]]:
+            # Convert to RGB for PaddleOCR
+            if len(image.shape) == 3:
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-                    # PaddleOCR 3.x: predict returns a list of OCRResult objects
-                    results = self.paddleocr_reader.predict(rgb_image)
+            raw_results = self.paddleocr_reader.predict(rgb_image)
+            filtered_results = self._parse_paddleocr_results(raw_results, self.confidence_threshold)
 
-                    filtered_results = []
-                    for result in results:
-                        if not isinstance(result, dict):
-                            continue
+            text_parts = [r['text'] for r in filtered_results]
+            return ' '.join(text_parts), filtered_results
 
-                        rec_texts = result.get('rec_texts', [])
-                        rec_scores = result.get('rec_scores', [])
-                        rec_polys = result.get('rec_polys', [])
-
-                        for i, text in enumerate(rec_texts):
-                            if i >= len(rec_scores):
-                                continue
-                            confidence = float(rec_scores[i])
-                            if confidence >= self.confidence_threshold:
-                                bbox = rec_polys[i] if i < len(rec_polys) else []
-                                filtered_results.append({
-                                    'text': text,
-                                    'confidence': confidence,
-                                    'bbox': bbox,
-                                })
-
-                    text_parts = [r['text'] for r in filtered_results]
-                    full_text = ' '.join(text_parts)
-
-                    return full_text, filtered_results
-
-                except MemoryError:
-                    raise
-                except Exception as e:
-                    if attempt == self.max_retries - 1:
-                        raise OCRProcessingError(
-                            engine_name="paddleocr",
-                            original_error=e,
-                            details={'suggestion': "Ensure PaddleOCR models are downloaded. Check internet connection."}
-                        )
-                    logger.warning(f"PaddleOCR attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(self.retry_delay)
+        return self._run_with_retries(
+            "paddleocr", "paddleocr processing", run,
+            final_details={'suggestion': "Ensure PaddleOCR models are downloaded. Check internet connection."},
+        )
 
     def extract_text(self, image: Union[str, Path, np.ndarray, Image.Image],
                      engine: Optional[str] = None,
@@ -916,10 +940,6 @@ class OCREngine:
             # Determine engine ranking
             if engine is not None:
                 ranked_engines = [engine]
-            elif self.auto_select:
-                ranked_engines = self._rank_engines(file_type, page_count)
-                if not ranked_engines:
-                    raise OCREngineNotAvailableError()
             else:
                 ranked_engines = self._rank_engines(file_type, page_count)
                 if not ranked_engines:
@@ -944,31 +964,7 @@ class OCREngine:
                             engine_name=current_engine,
                             details={'suggestion': f"Unknown engine: {current_engine}"}
                         )
-
-                    processing_time = time.time() - start_time
-
-                    # Compute average confidence for stats
-                    avg_conf = 0.0
-                    if results:
-                        confidences = [r.get('confidence', 0.0) for r in results]
-                        avg_conf = sum(confidences) / len(confidences)
-
-                    # Apply layout preservation if enabled
-                    if self.preserve_layout and results:
-                        text = self._preserve_layout(results)
-
-                    # Record stats
-                    self._record_engine_result(
-                        current_engine, success=True,
-                        confidence=avg_conf,
-                        processing_time=processing_time,
-                        file_type=file_type,
-                        page_count=page_count,
-                    )
-
-                    return text, results
-
-                except (OCRProcessingError, MemoryError) as e:
+                except Exception as e:
                     processing_time = time.time() - start_time
                     original_errors[current_engine] = str(e)
                     logger.warning(f"{current_engine} failed: {e}")
@@ -991,27 +987,32 @@ class OCREngine:
                         )
                     continue
 
-                except Exception as e:
-                    processing_time = time.time() - start_time
-                    original_errors[current_engine] = str(e)
-                    logger.warning(f"{current_engine} failed with unexpected error: {e}")
+                # Extraction succeeded; post-processing is best-effort.
+                processing_time = time.time() - start_time
+                avg_conf = 0.0
+                if results:
+                    confidences = [r.get('confidence', 0.0) for r in results]
+                    avg_conf = sum(confidences) / len(confidences)
 
-                    # Record failure for stats
-                    self._record_engine_result(
-                        current_engine, success=False,
-                        confidence=0.0,
-                        processing_time=processing_time,
-                        file_type=file_type,
-                        page_count=page_count,
+                try:
+                    if self.preserve_layout and results:
+                        text = self._preserve_layout(results)
+                except Exception as post_error:
+                    logger.warning(
+                        f"Post-processing failed after successful {current_engine} extraction: "
+                        f"{post_error}. Returning raw text."
                     )
 
-                    if engine is not None:
-                        raise OCRProcessingError(
-                            engine_name=current_engine,
-                            original_error=e,
-                            details={'forced_engine': True, 'suggestion': f"Forced engine '{current_engine}' failed."}
-                        )
-                    continue
+                # Record stats
+                self._record_engine_result(
+                    current_engine, success=True,
+                    confidence=avg_conf,
+                    processing_time=processing_time,
+                    file_type=file_type,
+                    page_count=page_count,
+                )
+
+                return text, results
 
             # All engines failed
             available = self._get_available_engines()
@@ -1022,11 +1023,8 @@ class OCREngine:
                 original_errors=original_errors,
             )
 
-        except (ImageProcessingError, MemoryError):
-            # Re-raise image processing and memory errors as-is
-            raise
         except OCRError:
-            # Re-raise our custom errors
+            # Re-raise our custom errors (incl. ImageProcessingError, MemoryError) as-is
             raise
         except Exception as e:
             # Wrap unexpected errors
@@ -1065,17 +1063,29 @@ class OCREngine:
         languages = languages or self.languages or ['en']
         is_english_only = all(lang.lower().startswith('en') for lang in languages)
 
+        # Shared cleanup applied before language-specific processing
+        text = self._collapse_char_runs(text)
+
         if is_english_only and SPELLCHECKER_AVAILABLE:
             return self._post_process_english(text)
         else:
             return self._post_process_universal(text)
 
+    @staticmethod
+    def _collapse_char_runs(text: str) -> str:
+        """Collapse repeated character runs (3+ identical chars -> 1)."""
+        return re.sub(r'(.)\1{2,}', r'\1', text)
+
+    @staticmethod
+    def _normalize_whitespace(text: str) -> str:
+        """Collapse multiple spaces/tabs and 3+ newlines, then strip ends."""
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
     def _post_process_english(self, text: str) -> str:
         """Post-process English text using spellchecker."""
         spell = SpellChecker()
-
-        # Remove repeated character runs (3+ identical chars -> 1)
-        text = re.sub(r'(.)\1{2,}', r'\1', text)
 
         # Split into tokens, preserving newlines as sentence separators
         lines = text.split('\n')
@@ -1115,25 +1125,17 @@ class OCREngine:
             processed_lines.append(''.join(corrected_tokens))
 
         text = '\n'.join(processed_lines)
-
-        # Collapse multiple spaces/tabs/newlines
-        text = re.sub(r'[ \t]+', ' ', text)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-
-        return text.strip()
+        return self._normalize_whitespace(text)
 
     def _post_process_universal(self, text: str) -> str:
         """
         Post-process text for any language using universal cleanup rules.
 
-        - Remove repeated character runs (3+ identical chars -> 1)
-        - Collapse multiple spaces/tabs/newlines to single spaces
         - Strip isolated punctuation-only tokens
         - Remove tokens shorter than 2 chars unless whitelisted
+        (Repeated character runs and whitespace collapsing are handled
+        by post_process_text via shared helpers.)
         """
-        # Remove repeated character runs (3+ identical chars -> 1)
-        text = re.sub(r'(.)\1{2,}', r'\1', text)
-
         # Split into tokens preserving whitespace structure
         tokens = re.findall(r'\b\w+\b|[^\w\s]|\s+', text, re.UNICODE)
 
@@ -1159,12 +1161,7 @@ class OCREngine:
                 filtered_tokens.append(token)
 
         text = ''.join(filtered_tokens)
-
-        # Collapse multiple spaces/tabs/newlines to single spaces
-        text = re.sub(r'[ \t]+', ' ', text)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-
-        return text.strip()
+        return self._normalize_whitespace(text)
 
     def set_confidence_threshold(self, threshold: float):
         """

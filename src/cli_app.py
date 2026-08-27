@@ -114,7 +114,9 @@ class OutputFormatter:
                 text_part = str(result.get('text', '')).replace('"', '""')
                 confidence = result.get('confidence', 0.0)
                 bbox = result.get('bbox', [])
-                if bbox and len(bbox) >= 4:
+                # Explicit None check: bboxes may be numpy arrays, and
+                # `array and ...` raises "truth value of an array is ambiguous".
+                if bbox is not None and len(bbox) >= 4:
                     x1, y1 = bbox[0]
                     x2, y2 = bbox[1]
                     x3, y3 = bbox[2]
