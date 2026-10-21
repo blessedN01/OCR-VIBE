@@ -22,7 +22,7 @@ import flet as ft
 from .ocr_engine import OCREngine, get_available_engines
 from .pdf_handler import PDFHandler
 from .config_loader import get_config_parser
-from .batch_queue import BatchQueueManager, TaskStatus
+from .batch_queue import BatchQueueManager
 from .exceptions import (
     OCREngineNotAvailableError,
     OCRProcessingError,
@@ -30,6 +30,7 @@ from .exceptions import (
     PDFProcessingError,
     MemoryError,
 )
+from .cli_app import OutputFormatter, parse_page_ranges
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -121,14 +122,44 @@ class FletGUIApp:
         ]
         self.engine_radio_group = ft.RadioGroup(content=ft.Row(engine_options), value="auto")
 
-        controls_row = ft.Row(
-            [
-                ft.Column([self.language_dropdown], tight=True),
-                ft.Column([ft.Text("Confidence"), self.confidence_slider], tight=True),
-                ft.Column([ft.Text("Engine"), self.engine_radio_group], tight=True),
+        self.output_format_dropdown = ft.Dropdown(
+            label="Output format",
+            value=self.config.get('output_format', 'txt'),
+            options=[
+                ft.dropdown.Option("txt", "TXT"),
+                ft.dropdown.Option("json", "JSON"),
+                ft.dropdown.Option("csv", "CSV"),
+                ft.dropdown.Option("md", "Markdown"),
+                ft.dropdown.Option("html", "HTML"),
+                ft.dropdown.Option("docx", "DOCX"),
             ],
-            alignment=ft.MainAxisAlignment.START,
-            spacing=20,
+            width=140,
+        )
+
+        self.page_range_field = ft.TextField(
+            label="PDF pages (e.g. 1-3,5,7-9)",
+            value="",
+            width=200,
+            hint_text="All pages if empty",
+        )
+
+        ocr_config_tab = ft.Column(
+            [
+                ft.Text("OCR Options", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [
+                        ft.Column([self.language_dropdown], tight=True),
+                        ft.Column([ft.Text("Confidence"), self.confidence_slider], tight=True),
+                        ft.Column([ft.Text("Engine"), self.engine_radio_group], tight=True),
+                        ft.Column([self.output_format_dropdown], tight=True),
+                        ft.Column([self.page_range_field], tight=True),
+                    ],
+                    alignment=ft.MainAxisAlignment.START,
+                    spacing=20,
+                    wrap=True,
+                ),
+            ],
+            spacing=10,
         )
 
         self.drop_container = ft.Container(
@@ -140,7 +171,7 @@ class FletGUIApp:
             ),
             border=ft.Border.all(2, ft.Colors.with_opacity(0.5, ft.Colors.ON_SURFACE)),
             border_radius=8,
-            padding=20,
+            padding=12,
             ink=True,
             on_click=self._browse_files,
             on_hover=self._on_hover_drop_zone,
@@ -155,15 +186,45 @@ class FletGUIApp:
         action_row = ft.Row(
             [self.browse_button, self.clear_button, self.save_button, self.copy_button, self.clear_log_button],
             spacing=10,
+            wrap=True,
+        )
+
+        self.folder_button = ft.ElevatedButton("Browse Folder", on_click=self._browse_folder)
+        self.recursive_checkbox = ft.Checkbox(label="Recursive", value=False)
+        self.folder_row = ft.Row(
+            [self.folder_button, self.recursive_checkbox],
+            spacing=10,
+            visible=False,
+        )
+
+        self.gpu_checkbox = ft.Checkbox(label="Use GPU", value=self.config.get('use_gpu', False))
+        self.memory_limit_field = ft.TextField(
+            label="Memory limit (MB)",
+            value=str(self.config.get('memory_limit_mb', '')),
+            width=140,
+        )
+        self.preprocess_global_checkbox = ft.Checkbox(label="Enable preprocessing", value=self.config.get('preprocess_images', True))
+
+        system_tab = ft.Column(
+            [
+                ft.Text("System", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [self.gpu_checkbox, self.memory_limit_field, self.preprocess_global_checkbox],
+                    spacing=20,
+                ),
+            ],
+            spacing=10,
         )
 
         self.batch_start_button = ft.ElevatedButton("Start Batch", on_click=self._start_batch)
         self.batch_cancel_button = ft.ElevatedButton("Cancel Batch", on_click=self._cancel_batch, disabled=True)
         self.batch_clear_button = ft.ElevatedButton("Clear Completed", on_click=self._clear_batch_completed)
+        self.batch_parallel_checkbox = ft.Checkbox(label="Parallel processing", value=False)
 
         batch_row = ft.Row(
-            [self.batch_start_button, self.batch_cancel_button, self.batch_clear_button],
+            [self.batch_start_button, self.batch_cancel_button, self.batch_clear_button, self.batch_parallel_checkbox],
             spacing=10,
+            wrap=True,
         )
 
         self.post_process_checkbox = ft.Checkbox(label="Post-process output", value=self.config.get('post_process', False))
@@ -171,10 +232,16 @@ class FletGUIApp:
         self.preserve_layout_checkbox = ft.Checkbox(label="Preserve layout (DBSCAN)", value=self.config.get('preserve_layout', False))
         self.searchable_pdf_checkbox = ft.Checkbox(label="Searchable PDF", value=self.config.get('searchable_pdf', False))
 
-        options_row = ft.Row(
-            [self.post_process_checkbox, self.extract_tables_checkbox, self.preserve_layout_checkbox, self.searchable_pdf_checkbox],
-            spacing=20,
-            wrap=True,
+        pdf_options_tab = ft.Column(
+            [
+                ft.Text("PDF Options", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [self.post_process_checkbox, self.extract_tables_checkbox, self.preserve_layout_checkbox, self.searchable_pdf_checkbox],
+                    spacing=20,
+                    wrap=True,
+                ),
+            ],
+            spacing=10,
         )
 
         self.deskew_checkbox = ft.Checkbox(label="Deskew", value=self.config.get('deskew', False))
@@ -182,9 +249,15 @@ class FletGUIApp:
         self.upscale_checkbox = ft.Checkbox(label="Upscale (2x)", value=self.config.get('upscale', False))
         self.remove_bg_checkbox = ft.Checkbox(label="Remove background", value=self.config.get('remove_bg', False))
 
-        preprocessing_row = ft.Row(
-            [self.deskew_checkbox, self.clahe_checkbox, self.upscale_checkbox, self.remove_bg_checkbox],
-            spacing=20,
+        preprocessing_tab = ft.Column(
+            [
+                ft.Text("Preprocessing", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [self.deskew_checkbox, self.clahe_checkbox, self.upscale_checkbox, self.remove_bg_checkbox],
+                    spacing=20,
+                ),
+            ],
+            spacing=10,
         )
 
         self.preview_original_image = ft.Image(src="", width=300, height=200, fit=ft.BoxFit.CONTAIN, visible=False)
@@ -201,6 +274,14 @@ class FletGUIApp:
             visible=False,
         )
         self.preview_row = preview_row
+
+        preview_tab = ft.Column(
+            [
+                ft.Text("Preview", size=16, weight=ft.FontWeight.BOLD),
+                preview_row,
+            ],
+            spacing=10,
+        )
 
         self.progress_bar = ft.ProgressBar(value=0.0, width=float("inf"))
 
@@ -226,7 +307,7 @@ class FletGUIApp:
             expand=True,
         )
 
-        self.batch_column = ft.Column([], spacing=5, expand=True, scroll=ft.ScrollMode.AUTO)
+        self.batch_column = ft.Column([], spacing=5, expand=True)
         self.batch_results_textfield = ft.TextField(
             multiline=True,
             read_only=True,
@@ -236,11 +317,32 @@ class FletGUIApp:
             expand=True,
         )
 
+        results_tab = ft.Column(
+            [ft.Container(self.results_textfield, padding=10, expand=True)],
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        log_tab = ft.Column(
+            [ft.Container(self.log_textfield, padding=10, expand=True)],
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        batch_tab = ft.Column(
+            [
+                ft.Text("Batch Queue", size=16, weight=ft.FontWeight.BOLD),
+                self.batch_column,
+                self.batch_results_textfield,
+            ],
+            expand=True,
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
         self.tabs = ft.Tabs(
             selected_index=0,
             animation_duration=300,
             expand=True,
-            length=3,
+            length=9,
             content=ft.Column(
                 expand=True,
                 controls=[
@@ -249,22 +351,26 @@ class FletGUIApp:
                             ft.Tab(label="Results"),
                             ft.Tab(label="Log"),
                             ft.Tab(label="Batch Queue"),
+                            ft.Tab(label="OCR Options"),
+                            ft.Tab(label="PDF Options"),
+                            ft.Tab(label="Preprocessing"),
+                            ft.Tab(label="Preview"),
+                            ft.Tab(label="System"),
+                            ft.Tab(label="About"),
                         ],
                     ),
                     ft.TabBarView(
                         expand=True,
                         controls=[
-                            ft.Container(self.results_textfield, padding=10, expand=True),
-                            ft.Container(self.log_textfield, padding=10, expand=True),
-                            ft.Column(
-                                [
-                                    ft.Text("Batch Queue", size=16, weight=ft.FontWeight.BOLD),
-                                    self.batch_column,
-                                    self.batch_results_textfield,
-                                ],
-                                expand=True,
-                                spacing=10,
-                            ),
+                            results_tab,
+                            log_tab,
+                            batch_tab,
+                            ocr_config_tab,
+                            pdf_options_tab,
+                            preprocessing_tab,
+                            preview_tab,
+                            system_tab,
+                            self._build_about_tab(),
                         ],
                     ),
                 ],
@@ -277,29 +383,29 @@ class FletGUIApp:
         self.save_file_picker = ft.FilePicker()
         self.page.services.append(self.save_file_picker)
 
-        self.column = ft.Column(
+        self.folder_picker = ft.FilePicker()
+        self.page.services.append(self.folder_picker)
+
+        top_section = ft.Column(
             [
                 self.title_text,
-                controls_row,
                 self.drop_container,
                 action_row,
+                self.folder_row,
                 batch_row,
-                ft.Divider(),
-                ft.Text("Options", size=14, weight=ft.FontWeight.BOLD),
-                options_row,
-                ft.Text("Preprocessing", size=14, weight=ft.FontWeight.BOLD),
-                preprocessing_row,
-                ft.Divider(),
-                ft.Text("Preview", size=14, weight=ft.FontWeight.BOLD),
-                preview_row,
-                ft.Divider(),
                 self.progress_bar,
                 status_bar,
-                ft.Container(self.tabs, expand=True, height=400),
             ],
-            spacing=12,
+            spacing=6,
+        )
+
+        self.column = ft.Column(
+            [
+                top_section,
+                ft.Container(self.tabs, expand=True),
+            ],
+            spacing=0,
             expand=True,
-            scroll=ft.ScrollMode.AUTO,
         )
 
     def _on_hover_drop_zone(self, e: ft.HoverEvent):
@@ -328,6 +434,46 @@ class FletGUIApp:
         except Exception as ex:
             logger.error(f"File picker error: {ex}")
             self._show_snack(f"Error selecting files: {ex}")
+
+    async def _browse_folder(self, e: ft.ControlEvent):
+        try:
+            result = await self.folder_picker.get_directory_path(
+                dialog_title="Select folder to process",
+            )
+            if result:
+                folder_path = Path(result)
+                recursive = self.recursive_checkbox.value
+                self._process_folder(folder_path, recursive)
+        except Exception as ex:
+            logger.error(f"Folder picker error: {ex}")
+            self._show_snack(f"Error selecting folder: {ex}")
+
+    def _process_folder(self, folder_path: Path, recursive: bool):
+        if self.processing:
+            self._show_snack("Please wait for current processing to complete.")
+            return
+        supported_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.pdf'}
+        if recursive:
+            files = [f for f in folder_path.rglob('*') if f.is_file() and f.suffix.lower() in supported_extensions]
+        else:
+            files = [f for f in folder_path.iterdir() if f.is_file() and f.suffix.lower() in supported_extensions]
+
+        if not files:
+            self._show_snack("No supported files found in folder.")
+            return
+
+        self.processing = True
+        self.status_text.value = f"Processing folder: {folder_path.name} ({len(files)} files)"
+        self.progress_bar.value = 0.0
+        self.results_textfield.value = ""
+        self.clear_button.disabled = True
+        self.save_button.disabled = True
+        self.copy_button.disabled = True
+        self.preview_row.visible = False
+        self.page.update()
+
+        thread = threading.Thread(target=self._process_folder_thread, args=(folder_path, files), daemon=True)
+        thread.start()
 
     def _process_file(self, file_path: Path):
         if self.processing:
@@ -413,6 +559,16 @@ class FletGUIApp:
             self.ocr_engine.preserve_layout = self.preserve_layout_checkbox.value
             self.ocr_engine.set_confidence_threshold(self.confidence_slider.value)
 
+            page_range = self.page_range_field.value.strip() if self.page_range_field.value else None
+            page_numbers = None
+            if page_range:
+                try:
+                    page_numbers = parse_page_ranges(page_range)
+                except ValueError as ex:
+                    self.queue.put(("error", f"Invalid page range: {ex}"))
+                    self._reset_ui()
+                    return
+
             if file_path.suffix.lower() == '.pdf':
                 self.queue.put(("status", f"Detecting PDF type: {file_path.name}"))
                 self._log("Detecting PDF type...")
@@ -425,7 +581,7 @@ class FletGUIApp:
                 self.queue.put(("status", f"Extracting text from {page_count} pages"))
                 self._log("Extracting text from PDF...")
 
-                text = self.pdf_handler.extract_text(file_path, engine=engine)
+                text = self.pdf_handler.extract_text(file_path, engine=engine, pages=page_numbers)
                 self.queue.put(("progress", 90))
 
                 results = []
@@ -441,7 +597,7 @@ class FletGUIApp:
                 if self.extract_tables_checkbox.value:
                     self._log("Extracting tables from PDF...")
                     try:
-                        tables = self.pdf_handler.extract_tables(file_path)
+                        tables = self.pdf_handler.extract_tables(file_path, pages=','.join(str(p) for p in page_numbers) if page_numbers else None)
                         table_output = self._format_gui_tables(tables)
                         if table_output:
                             text = text + "\n\n" + table_output
@@ -451,7 +607,7 @@ class FletGUIApp:
                 if self.searchable_pdf_checkbox.value:
                     self._log("Generating searchable PDF...")
                     try:
-                        search_path = self.pdf_handler.generate_searchable_pdf(file_path, self.ocr_engine)
+                        search_path = self.pdf_handler.generate_searchable_pdf(file_path, self.ocr_engine, pages=page_numbers)
                         self._log(f"Searchable PDF saved to: {search_path}")
                     except Exception as ex:
                         self._log(f"Searchable PDF generation failed: {ex}")
@@ -550,6 +706,71 @@ class FletGUIApp:
             self.queue.put(("error", error_msg))
         except Exception as ex:
             error_msg = f"Unexpected error processing {file_path}: {ex}"
+            logger.error(error_msg)
+            self._log(f"ERROR: {error_msg}")
+            self.queue.put(("error", error_msg))
+
+    def _process_folder_thread(self, folder_path: Path, files: list[Path]):
+        try:
+            output_format = self.output_format_dropdown.value
+            page_range = self.page_range_field.value.strip() if self.page_range_field.value else None
+            page_numbers = None
+            if page_range:
+                try:
+                    page_numbers = parse_page_ranges(page_range)
+                except ValueError as ex:
+                    self.queue.put(("error", f"Invalid page range: {ex}"))
+                    self._reset_ui()
+                    return
+
+            from .cli_app import process_single_file
+
+            ocr_engine = self.ocr_engine
+            pdf_handler = self.pdf_handler
+
+            all_results = []
+            successful = 0
+            total = len(files)
+
+            for i, file_path in enumerate(files):
+                if not self.processing:
+                    break
+                progress = (i / total) * 100.0
+                self.queue.put(("progress", progress))
+                self.queue.put(("status", f"Processing {file_path.name} ({i+1}/{total})"))
+                self._log(f"Processing {file_path.name}...")
+
+                try:
+                    text, _results = process_single_file(
+                        file_path=file_path,
+                        ocr_engine=ocr_engine,
+                        pdf_handler=pdf_handler,
+                        output_format=output_format,
+                        output_path=None,
+                        engine=self.engine_radio_group.value if self.engine_radio_group.value != "auto" else None,
+                        post_process=self.post_process_checkbox.value,
+                        extract_tables=self.extract_tables_checkbox.value,
+                        preserve_layout=self.preserve_layout_checkbox.value,
+                        searchable_pdf=self.searchable_pdf_checkbox.value,
+                        pages=page_numbers,
+                    )
+                    successful += 1
+                    all_results.append(f"=== {file_path.name} ===\n{text}\n")
+                except Exception as ex:
+                    self._log(f"Failed {file_path.name}: {ex}")
+
+            self.queue.put(("progress", 100))
+            self.queue.put(("status", f"Folder complete: {successful}/{total} successful"))
+            combined = "\n\n".join(all_results)
+            self.queue.put(("results", combined, [], {
+                'file_path': str(folder_path),
+                'file_type': 'Folder',
+                'languages': self.ocr_engine.get_supported_languages(),
+                'confidence_threshold': self.ocr_engine.confidence_threshold,
+                'output_format': output_format,
+            }))
+        except Exception as ex:
+            error_msg = f"Folder processing error: {ex}"
             logger.error(error_msg)
             self._log(f"ERROR: {error_msg}")
             self.queue.put(("error", error_msg))
@@ -687,6 +908,7 @@ class FletGUIApp:
             return
         try:
             suffix = Path(path).suffix.lower()
+            output_format = self.output_format_dropdown.value
             if suffix == ".docx":
                 try:
                     from docx import Document
@@ -701,12 +923,24 @@ class FletGUIApp:
                 doc.add_paragraph(text)
                 doc.save(path)
             else:
+                metadata = {
+                    'file_path': str(self.current_file) if self.current_file else 'Unknown',
+                    'languages': self.ocr_engine.get_supported_languages(),
+                    'confidence_threshold': self.ocr_engine.confidence_threshold,
+                    'output_format': output_format,
+                }
+                if output_format == 'json':
+                    content = OutputFormatter.format_json(text, [], metadata)
+                elif output_format == 'csv':
+                    content = OutputFormatter.format_csv(text, [], metadata)
+                elif output_format == 'md':
+                    content = OutputFormatter.format_md(text, metadata)
+                elif output_format == 'html':
+                    content = OutputFormatter.format_html(text, [], metadata)
+                else:
+                    content = OutputFormatter.format_txt(text, metadata)
                 with open(path, "w", encoding="utf-8") as f:
-                    if self.current_file:
-                        f.write(f"# OCR Results\n")
-                        f.write(f"# Original file: {self.current_file}\n")
-                        f.write(f"# Languages: {', '.join(self.ocr_engine.get_supported_languages())}\n\n")
-                    f.write(text)
+                    f.write(content)
             self._show_snack(f"Results saved to {path}")
         except Exception as ex:
             self._show_snack(f"Save error: {ex}")
@@ -738,10 +972,30 @@ class FletGUIApp:
         self.page.update()
 
     def _init_batch_manager(self):
+        memory_limit = None
+        if self.memory_limit_field.value.strip():
+            try:
+                memory_limit = int(self.memory_limit_field.value.strip())
+            except ValueError:
+                pass
+
         config = {
             'post_process': self.post_process_checkbox.value,
             'extract_tables': self.extract_tables_checkbox.value,
-            'engine': self.engine_radio_group.value,
+            'engine': self.engine_radio_group.value if self.engine_radio_group.value != "auto" else None,
+            'preserve_layout': self.preserve_layout_checkbox.value,
+            'searchable_pdf': self.searchable_pdf_checkbox.value,
+            'deskew': self.deskew_checkbox.value,
+            'clahe': self.clahe_checkbox.value,
+            'upscale': self.upscale_checkbox.value,
+            'remove_bg': self.remove_bg_checkbox.value,
+            'preprocess_images': self.preprocess_global_checkbox.value,
+            'use_gpu': self.gpu_checkbox.value,
+            'memory_limit_mb': memory_limit,
+            'languages': self.ocr_engine.languages,
+            'confidence_threshold': self.confidence_slider.value,
+            'output_format': self.output_format_dropdown.value,
+            'parallel': self.batch_parallel_checkbox.value,
         }
         self.batch_manager = BatchQueueManager(
             ocr_engine=self.ocr_engine,
@@ -834,6 +1088,46 @@ class FletGUIApp:
             except Exception as ex:
                 logger.warning(f"Failed to format table {i + 1}: {ex}")
         return "\n\n".join(output_parts)
+
+    def _build_about_tab(self):
+        engines = get_available_engines()
+        engine_rows = []
+        for e in engines:
+            initialized = (
+                (e == 'easyocr' and self.ocr_engine.easyocr_reader is not None)
+                or (e == 'paddleocr' and self.ocr_engine.paddleocr_reader is not None)
+            )
+            if not initialized and e == 'tesseract':
+                from .ocr_engine import TESSERACT_AVAILABLE
+                initialized = TESSERACT_AVAILABLE
+            status = "Ready" if initialized else "Not initialized"
+            color = ft.Colors.GREEN if initialized else ft.Colors.ORANGE
+            engine_rows.append(
+                ft.Row([
+                    ft.Text(e, width=120),
+                    ft.Text(status, color=color, width=120),
+                ], spacing=10)
+            )
+
+        about_content = ft.Column([
+            ft.Text("About OCR-VIBE", size=18, weight=ft.FontWeight.BOLD),
+            ft.Text("Version 2.0.0", size=14),
+            ft.Divider(),
+            ft.Text("Available OCR Engines", size=16, weight=ft.FontWeight.BOLD),
+            ft.Column(engine_rows, spacing=5),
+            ft.Divider(),
+            ft.Text("Features", size=16, weight=ft.FontWeight.BOLD),
+            ft.Text("• Multi-format: PNG, JPG, JPEG, TIFF, BMP, PDF"),
+            ft.Text("• Multiple OCR engines: EasyOCR, PaddleOCR, Tesseract"),
+            ft.Text("• Batch and folder processing"),
+            ft.Text("• Export: TXT, JSON, CSV, Markdown, HTML, DOCX"),
+            ft.Text("• PDF: table extraction, searchable PDF, page range"),
+            ft.Text("• Preprocessing: deskew, CLAHE, upscale, background removal"),
+            ft.Text("• Layout preservation, language post-processing"),
+            ft.Divider(),
+            ft.Text("Configuration: ocr-vibe.yaml / ~/.ocr-vibe/config.yaml"),
+        ], spacing=10, scroll=ft.ScrollMode.AUTO)
+        return ft.Container(about_content, padding=20, expand=True)
 
     def build(self) -> ft.Column:
         return self.column
