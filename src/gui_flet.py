@@ -271,7 +271,7 @@ class FletGUIApp:
                 ft.Column([self.preview_processed_text, self.preview_processed_image]),
             ],
             spacing=20,
-            visible=False,
+            visible=True,
         )
         self.preview_row = preview_row
 
@@ -401,8 +401,8 @@ class FletGUIApp:
 
         self.column = ft.Column(
             [
+                ft.Container(self.tabs, expand=1),
                 top_section,
-                ft.Container(self.tabs, expand=True),
             ],
             spacing=0,
             expand=True,
@@ -469,7 +469,6 @@ class FletGUIApp:
         self.clear_button.disabled = True
         self.save_button.disabled = True
         self.copy_button.disabled = True
-        self.preview_row.visible = False
         self.page.update()
 
         thread = threading.Thread(target=self._process_folder_thread, args=(folder_path, files), daemon=True)
@@ -494,7 +493,6 @@ class FletGUIApp:
         self.clear_button.disabled = True
         self.save_button.disabled = True
         self.copy_button.disabled = True
-        self.preview_row.visible = False
         self.preview_original_image.visible = False
         self.preview_processed_image.visible = False
         self.preview_original_text.value = "Original image will appear here"
@@ -538,7 +536,6 @@ class FletGUIApp:
                     self.preview_processed_image.data = tmp.name
                     self._temp_files.append(tmp.name)
 
-                self.preview_row.visible = True
                 self.page.update()
         except Exception as ex:
             logger.debug(f"Preview update failed: {ex}")
