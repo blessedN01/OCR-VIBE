@@ -6,34 +6,38 @@ This module provides OCR functionality using EasyOCR as the primary engine
 with pytesseract as a fallback. It includes image preprocessing capabilities
 using OpenCV and Pillow, and supports multiple languages with confidence thresholds.
 """
+from __future__ import annotations
 
 import logging
-import sys
 import os
 import re
+import sys
 import time
-from typing import List, Optional, Tuple, Union, Dict, Any, Callable
 from pathlib import Path
+from typing import Any, Callable, ClassVar
+
+logger = logging.getLogger(__name__)
+
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
-    logging.error("NumPy is required but not installed. Install with: pip install numpy")
+    logger.error("NumPy is required but not installed. Install with: pip install numpy")
 
 try:
     from PIL import Image
     PILLOW_AVAILABLE = True
 except ImportError:
     PILLOW_AVAILABLE = False
-    logging.error("Pillow is required for image processing. Install with: pip install pillow")
+    logger.error("Pillow is required for image processing. Install with: pip install pillow")
 
 try:
     import cv2
     OPENCV_AVAILABLE = True
 except ImportError:
     OPENCV_AVAILABLE = False
-    logging.error("OpenCV is required for image preprocessing. Install with: pip install opencv-python")
+    logger.error("OpenCV is required for image preprocessing. Install with: pip install opencv-python")
 
 # OCR libraries
 try:
@@ -41,51 +45,51 @@ try:
     EASYOCR_AVAILABLE = True
 except ImportError:
     EASYOCR_AVAILABLE = False
-    logging.error("EasyOCR is required for OCR functionality. Install with: pip install easyocr")
+    logger.error("EasyOCR is required for OCR functionality. Install with: pip install easyocr")
 
 try:
     import pytesseract
     TESSERACT_AVAILABLE = True
 except ImportError:
     TESSERACT_AVAILABLE = False
-    logging.error("pytesseract is required for OCR functionality. Install with: pip install pytesseract")
-    logging.error("Note: pytesseract also requires Tesseract OCR to be installed on your system.")
-    logging.error("Download from: https://github.com/tesseract-ocr/tesseract")
+    logger.error("pytesseract is required for OCR functionality. Install with: pip install pytesseract")
+    logger.error("Note: pytesseract also requires Tesseract OCR to be installed on your system.")
+    logger.error("Download from: https://github.com/tesseract-ocr/tesseract")
 
 try:
     from paddleocr import PaddleOCR
     PADDLEOCR_AVAILABLE = True
 except ImportError:
     PADDLEOCR_AVAILABLE = False
-    logging.warning("PaddleOCR is not installed. Install with: pip install paddleocr")
-    logging.warning("PaddleOCR excels at CJK, complex layouts, and low-quality scans.")
+    logger.warning("PaddleOCR is not installed. Install with: pip install paddleocr")
+    logger.warning("PaddleOCR excels at CJK, complex layouts, and low-quality scans.")
 
 try:
     from spellchecker import SpellChecker
     SPELLCHECKER_AVAILABLE = True
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
-    logging.warning("pyspellchecker not installed. English-only post-processing will be limited. Install with: pip install pyspellchecker")
+    logger.warning("pyspellchecker not installed. English-only post-processing will be limited. Install with: pip install pyspellchecker")
 
 try:
     from sklearn.cluster import DBSCAN
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
-    logging.warning("scikit-learn not installed. Layout preservation will not work. Install with: pip install scikit-learn")
+    logger.warning("scikit-learn not installed. Layout preservation will not work. Install with: pip install scikit-learn")
 
 # Import custom modules
 from .exceptions import (
-    OCRError, OCREngineNotAvailableError, OCREngineInitializationError,
-    OCRProcessingError, ImageProcessingError, MemoryError, OCREngineFallbackError
+    ImageProcessingError,
+    MemoryError,
+    OCREngineFallbackError,
+    OCREngineInitializationError,
+    OCREngineNotAvailableError,
+    OCRError,
+    OCRProcessingError,
 )
 from .memory_manager import MemoryManager, ResourceManager
 from .stats_tracker import EngineStatsTracker
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 
 
 def _get_easyocr_cache_dir() -> str:
@@ -131,7 +135,7 @@ def _get_paddleocr_cache_dir() -> str:
     return cache_dir
 
 
-PADDLEOCR_LANG_MAP: Dict[str, str] = {
+PADDLEOCR_LANG_MAP: dict[str, str] = {
     'en': 'en',
     'fr': 'fr',
     'de': 'german',
@@ -206,11 +210,11 @@ class OCREngine:
     """
 
     def __init__(self,
-                 languages: Optional[List[str]] = None,
+                 languages: list[str] | None = None,
                  confidence_threshold: float = 0.5,
                  use_gpu: bool = False,
                  preprocess_images: bool = True,
-                 memory_limit_mb: Optional[int] = None,
+                 memory_limit_mb: int | None = None,
                  max_retries: int = 3,
                  retry_delay: float = 1.0,
                  deskew: bool = False,
@@ -219,7 +223,7 @@ class OCREngine:
                  remove_bg: bool = False,
                  preserve_layout: bool = False,
                  auto_select: bool = True,
-                 stats_path: Optional[str] = None):
+                 stats_path: str | None = None):
         """
         Initialize the OCR engine.
 
@@ -312,7 +316,7 @@ class OCREngine:
         if not EASYOCR_AVAILABLE and not TESSERACT_AVAILABLE and not PADDLEOCR_AVAILABLE:
             raise OCREngineNotAvailableError()
 
-    def _map_to_paddleocr_lang(self, languages: List[str]) -> str:
+    def _map_to_paddleocr_lang(self, languages: list[str]) -> str:
         """
         Map EasyOCR/Tesseract language codes to PaddleOCR language code.
 
@@ -346,7 +350,7 @@ class OCREngine:
         return list(value)
 
     @staticmethod
-    def _parse_easyocr_results(raw_results: list, confidence_threshold: float) -> List[dict]:
+    def _parse_easyocr_results(raw_results: list, confidence_threshold: float) -> list[dict]:
         """Convert EasyOCR readtext output to normalized OCR result dicts."""
         filtered_results = []
         for result in raw_results:
@@ -359,7 +363,7 @@ class OCREngine:
         return filtered_results
 
     @staticmethod
-    def _parse_paddleocr_results(raw_results: list, confidence_threshold: float) -> List[dict]:
+    def _parse_paddleocr_results(raw_results: list, confidence_threshold: float) -> list[dict]:
         """Convert PaddleOCR predict output to normalized OCR result dicts."""
         filtered_results = []
         for result in raw_results:
@@ -382,7 +386,7 @@ class OCREngine:
         return filtered_results
 
     @staticmethod
-    def _parse_tesseract_data(data: dict, confidence_threshold: float) -> List[dict]:
+    def _parse_tesseract_data(data: dict, confidence_threshold: float) -> list[dict]:
         """Convert pytesseract image_to_data output to normalized OCR result dicts."""
         results = []
         n_boxes = len(data['text'])
@@ -399,8 +403,8 @@ class OCREngine:
         return results
 
     def _run_with_retries(self, engine: str, context: str,
-                          operation: Callable[[], Tuple[str, List[dict]]],
-                          final_details: Optional[Dict[str, Any]] = None) -> Tuple[str, List[dict]]:
+                          operation: Callable[[], tuple[str, list[dict]]],
+                          final_details: dict[str, Any] | None = None) -> tuple[str, list[dict]]:
         """
         Run an OCR extraction operation with retry logic and memory management.
 
@@ -432,7 +436,7 @@ class OCREngine:
                     logger.warning(f"{engine} attempt {attempt + 1} failed: {e}. Retrying...")
                     time.sleep(self.retry_delay)
 
-    def _get_available_engines(self) -> List[str]:
+    def _get_available_engines(self) -> list[str]:
         """
         Get list of engines that are both available and initialized.
 
@@ -448,7 +452,7 @@ class OCREngine:
             engines.append('tesseract')
         return engines
 
-    def _rank_engines(self, file_type: str = 'image', page_count: int = 1) -> List[str]:
+    def _rank_engines(self, file_type: str = 'image', page_count: int = 1) -> list[str]:
         """
         Rank available engines by preference using stats tracking (UCB-style).
 
@@ -502,7 +506,7 @@ class OCREngine:
             except Exception as e:
                 logger.debug(f"Failed to record engine stats: {e}")
 
-    def preprocess_image(self, image: Union[str, Path, np.ndarray, Image.Image]) -> np.ndarray:
+    def preprocess_image(self, image: str | Path | np.ndarray | Image.Image) -> np.ndarray:
         """
         Preprocess image for better OCR accuracy.
 
@@ -580,12 +584,11 @@ class OCREngine:
 
                 # Upscale if enabled and image is small
                 height, width = processed.shape
-                if self.upscale or (height < 32 or width < 32):
-                    if height < 320 or width < 320:
-                        scale_factor = max(320 / height, 320 / width, 2.0)
-                        new_width = int(width * scale_factor)
-                        new_height = int(height * scale_factor)
-                        processed = cv2.resize(processed, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+                if (self.upscale or (height < 32 or width < 32)) and (height < 320 or width < 320):
+                    scale_factor = max(320 / height, 320 / width, 2.0)
+                    new_width = int(width * scale_factor)
+                    new_height = int(height * scale_factor)
+                    processed = cv2.resize(processed, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
 
                 return processed
 
@@ -678,7 +681,7 @@ class OCREngine:
 
         return closing
 
-    def _preserve_layout(self, results: List[dict]) -> str:
+    def _preserve_layout(self, results: list[dict]) -> str:
         """
         Sort OCR results to preserve text layout using DBSCAN clustering.
 
@@ -725,7 +728,7 @@ class OCREngine:
         labels = clustering.fit_predict(centroids)
 
         # Group results by cluster label
-        clusters: Dict[int, List[dict]] = {}
+        clusters: dict[int, list[dict]] = {}
         for i, (label, result) in enumerate(zip(labels, valid_results)):
             if label not in clusters:
                 clusters[label] = []
@@ -769,7 +772,7 @@ class OCREngine:
             return sum(xs) / 4
         return 0.0
 
-    def extract_text_easyocr(self, image: np.ndarray) -> Tuple[str, List[dict]]:
+    def extract_text_easyocr(self, image: np.ndarray) -> tuple[str, list[dict]]:
         """
         Extract text using EasyOCR with retry logic and memory management.
 
@@ -794,7 +797,7 @@ class OCREngine:
                 details={'suggestion': "OpenCV required for EasyOCR. Install with: pip install opencv-python"}
             )
 
-        def run() -> Tuple[str, List[dict]]:
+        def run() -> tuple[str, list[dict]]:
             # Convert to RGB for EasyOCR
             if len(image.shape) == 3:
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -810,7 +813,7 @@ class OCREngine:
 
         return self._run_with_retries("easyocr", "easyocr processing", run)
 
-    def extract_text_tesseract(self, image: np.ndarray) -> Tuple[str, List[dict]]:
+    def extract_text_tesseract(self, image: np.ndarray) -> tuple[str, list[dict]]:
         """
         Extract text using pytesseract as fallback with retry logic.
 
@@ -835,7 +838,7 @@ class OCREngine:
                 details={'suggestion': "Pillow required for pytesseract. Install with: pip install pillow"}
             )
 
-        def run() -> Tuple[str, List[dict]]:
+        def run() -> tuple[str, list[dict]]:
             # pytesseract expects PIL Image or numpy array
             if len(image.shape) == 3:
                 if not OPENCV_AVAILABLE:
@@ -863,7 +866,7 @@ class OCREngine:
             final_details={'suggestion': "Ensure Tesseract is properly installed and language data are available."},
         )
 
-    def extract_text_paddleocr(self, image: np.ndarray) -> Tuple[str, List[dict]]:
+    def extract_text_paddleocr(self, image: np.ndarray) -> tuple[str, list[dict]]:
         """
         Extract text using PaddleOCR with retry logic and memory management.
 
@@ -890,7 +893,7 @@ class OCREngine:
                 details={'suggestion': "OpenCV required for PaddleOCR. Install with: pip install opencv-python"}
             )
 
-        def run() -> Tuple[str, List[dict]]:
+        def run() -> tuple[str, list[dict]]:
             # Convert to RGB for PaddleOCR
             if len(image.shape) == 3:
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -908,10 +911,10 @@ class OCREngine:
             final_details={'suggestion': "Ensure PaddleOCR models are downloaded. Check internet connection."},
         )
 
-    def extract_text(self, image: Union[str, Path, np.ndarray, Image.Image],
-                     engine: Optional[str] = None,
+    def extract_text(self, image: str | Path | np.ndarray | Image.Image,
+                     engine: str | None = None,
                      file_type: str = 'image',
-                     page_count: int = 1) -> Tuple[str, List[dict]]:
+                     page_count: int = 1) -> tuple[str, list[dict]]:
         """
         Extract text from image using available OCR engines with fallback and retry logic.
 
@@ -946,7 +949,7 @@ class OCREngine:
                     raise OCREngineNotAvailableError()
 
             engines_tried = []
-            original_errors: Dict[str, str] = {}
+            original_errors: dict[str, str] = {}
 
             for current_engine in ranked_engines:
                 engines_tried.append(current_engine)
@@ -1030,7 +1033,7 @@ class OCREngine:
             # Wrap unexpected errors
             raise OCRProcessingError(original_error=e)
 
-    def get_supported_languages(self) -> List[str]:
+    def get_supported_languages(self) -> list[str]:
         """
         Get list of supported languages.
 
@@ -1039,7 +1042,7 @@ class OCREngine:
         """
         return self.languages.copy()
 
-    def post_process_text(self, text: str, languages: Optional[List[str]] = None) -> str:
+    def post_process_text(self, text: str, languages: list[str] | None = None) -> str:
         """
         Apply language-aware post-processing to extracted text.
 
@@ -1196,8 +1199,8 @@ class OCREngine:
             if self.paddleocr_reader is not None and hasattr(self.paddleocr_reader, 'close'):
                 try:
                     self.paddleocr_reader.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"PaddleOCR reader close failed: {e}")
             self.memory_manager.force_gc()
             logger.info("OCR engine resources cleaned up")
         except Exception as e:
@@ -1207,13 +1210,13 @@ class OCREngine:
         """Destructor to ensure cleanup."""
         try:
             self.cleanup()
-        except:
-            pass  # Ignore errors during cleanup in destructor
+        except Exception:
+            logger.debug("Ignored error during cleanup in destructor", exc_info=True)
 
 
 # Convenience functions for standalone usage
-def extract_text_from_image(image_path: Union[str, Path],
-                          languages: Optional[List[str]] = None,
+def extract_text_from_image(image_path: str | Path,
+                          languages: list[str] | None = None,
                           confidence_threshold: float = 0.5,
                           preprocess: bool = True) -> str:
     """
@@ -1235,7 +1238,7 @@ def extract_text_from_image(image_path: Union[str, Path],
     return text
 
 
-def get_available_engines() -> List[str]:
+def get_available_engines() -> list[str]:
     """
     Get list of available OCR engines.
 
@@ -1276,12 +1279,12 @@ class BaseOCREngine(ABC):
 
     @property
     @abstractmethod
-    def supported_languages(self) -> List[str]:
+    def supported_languages(self) -> list[str]:
         """List of language codes supported by this engine."""
         ...
 
     @abstractmethod
-    def initialize(self, languages: List[str], use_gpu: bool = False, **kwargs) -> bool:
+    def initialize(self, languages: list[str], use_gpu: bool = False, **kwargs) -> bool:
         """
         Initialize the engine with the given languages.
 
@@ -1296,7 +1299,7 @@ class BaseOCREngine(ABC):
         ...
 
     @abstractmethod
-    def extract_text(self, image: Any) -> Tuple[str, List[Dict[str, Any]]]:
+    def extract_text(self, image: Any) -> tuple[str, list[dict[str, Any]]]:
         """
         Extract text from an image.
 
@@ -1310,7 +1313,6 @@ class BaseOCREngine(ABC):
 
     def cleanup(self):
         """Release resources used by the engine."""
-        pass
 
 
 class EngineRegistry:
@@ -1322,7 +1324,7 @@ class EngineRegistry:
     BaseOCREngine instance.
     """
 
-    _engines: Dict[str, BaseOCREngine] = {}
+    _engines: ClassVar[dict[str, BaseOCREngine]] = {}
 
     @classmethod
     def register(cls, name: str, engine: BaseOCREngine):
@@ -1343,12 +1345,12 @@ class EngineRegistry:
             del cls._engines[name]
 
     @classmethod
-    def get(cls, name: str) -> Optional[BaseOCREngine]:
+    def get(cls, name: str) -> BaseOCREngine | None:
         """Get a registered engine by name."""
         return cls._engines.get(name)
 
     @classmethod
-    def get_all(cls) -> Dict[str, BaseOCREngine]:
+    def get_all(cls) -> dict[str, BaseOCREngine]:
         """Get all registered engines."""
         return cls._engines.copy()
 

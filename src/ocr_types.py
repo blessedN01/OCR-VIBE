@@ -1,6 +1,6 @@
 """Shared OCR result types and normalization helpers."""
 
-from typing import Any, Dict, List
+from typing import Any
 
 
 def normalize_bbox(value: Any) -> list:

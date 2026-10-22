@@ -4,35 +4,35 @@ Flet GUI Application Module
 
 Modern desktop GUI for OCR-VIBE using Flet, replacing the legacy tkinter GUI.
 """
+from __future__ import annotations
 
+import asyncio
+import datetime
 import logging
 import os
 import queue
 import tempfile
 import threading
 import time
-import datetime
-import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import psutil
+from typing import Any
 
 import flet as ft
-from .ocr_engine import OCREngine, get_available_engines
-from .pdf_handler import PDFHandler
-from .config_loader import get_config_parser
+import psutil
+
 from .batch_queue import BatchQueueManager
+from .cli_app import OutputFormatter, parse_page_ranges
+from .config_loader import get_config_parser
 from .exceptions import (
+    ImageProcessingError,
+    MemoryError,
     OCREngineNotAvailableError,
     OCRProcessingError,
-    ImageProcessingError,
     PDFProcessingError,
-    MemoryError,
 )
-from .cli_app import OutputFormatter, parse_page_ranges
+from .ocr_engine import OCREngine, get_available_engines
+from .pdf_handler import PDFHandler
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 AVAILABLE_LANGUAGES = [
@@ -87,11 +87,11 @@ class FletGUIApp:
         self.pdf_handler = PDFHandler(ocr_engine=self.ocr_engine)
 
         self.processing = False
-        self.current_file: Optional[Path] = None
-        self.log_messages: List[str] = []
-        self.batch_manager: Optional[BatchQueueManager] = None
-        self.batch_rows: Dict[str, ft.Row] = {}
-        self._temp_files: List[str] = []
+        self.current_file: Path | None = None
+        self.log_messages: list[str] = []
+        self.batch_manager: BatchQueueManager | None = None
+        self.batch_rows: dict[str, ft.Row] = {}
+        self._temp_files: list[str] = []
 
         self.queue: queue.Queue = queue.Queue()
         self._ui_dirty = False
@@ -102,6 +102,16 @@ class FletGUIApp:
 
     def _build_ui(self):
         self.title_text = ft.Text("OCR-VIBE", size=24, weight=ft.FontWeight.BOLD)
+
+        self.theme_button = ft.IconButton(
+            icon=ft.Icons.LIGHT_MODE,
+            tooltip="Passer en mode clair",
+            on_click=self._toggle_theme,
+        )
+        self.title_row = ft.Row(
+            [self.title_text, ft.Container(expand=True), self.theme_button],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
 
         self.language_dropdown = ft.Dropdown(
             label="Language",
@@ -388,7 +398,6 @@ class FletGUIApp:
 
         top_section = ft.Column(
             [
-                self.title_text,
                 self.drop_container,
                 action_row,
                 self.folder_row,
@@ -401,12 +410,24 @@ class FletGUIApp:
 
         self.column = ft.Column(
             [
+                self.title_row,
                 ft.Container(self.tabs, expand=1),
                 top_section,
             ],
             spacing=0,
             expand=True,
         )
+
+    def _toggle_theme(self, e: ft.ControlEvent):
+        self.page.theme_mode = (
+            ft.ThemeMode.LIGHT if self.page.theme_mode == ft.ThemeMode.DARK else ft.ThemeMode.DARK
+        )
+        is_dark = self.page.theme_mode == ft.ThemeMode.DARK
+        self.theme_button.icon = ft.Icons.LIGHT_MODE if is_dark else ft.Icons.DARK_MODE
+        self.theme_button.tooltip = (
+            "Passer en mode clair" if is_dark else "Passer en mode sombre"
+        )
+        self.page.update()
 
     def _on_hover_drop_zone(self, e: ft.HoverEvent):
         if e.data == "true":
@@ -527,7 +548,9 @@ class FletGUIApp:
                     img_rgb = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
                     img_pil = Image.fromarray(img_rgb)
                     img_pil.thumbnail((300, 200))
-                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    # delete=False: the file must outlive this scope, it is
+                    # referenced by the image control and removed in _cleanup_temp_files
+                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)  # noqa: SIM115
                     img_pil.save(tmp.name)
                     self.preview_processed_image.src = tmp.name
                     self.preview_processed_image.visible = True
@@ -671,17 +694,17 @@ class FletGUIApp:
             logger.error(error_msg)
             self._log(f"ERROR: {error_msg}")
             self.queue.put(("error", error_msg))
-        except FileNotFoundError as ex:
+        except FileNotFoundError:
             error_msg = f"File not found: {file_path}. Please check the file path and ensure it exists."
             logger.error(error_msg)
             self._log(f"ERROR: {error_msg}")
             self.queue.put(("error", error_msg))
-        except PermissionError as ex:
+        except PermissionError:
             error_msg = f"Permission denied accessing {file_path}. Please check file permissions."
             logger.error(error_msg)
             self._log(f"ERROR: {error_msg}")
             self.queue.put(("error", error_msg))
-        except IsADirectoryError as ex:
+        except IsADirectoryError:
             error_msg = f"Path {file_path} is a directory, not a file. Please select a file."
             logger.error(error_msg)
             self._log(f"ERROR: {error_msg}")
@@ -847,7 +870,7 @@ class FletGUIApp:
             self._update_memory_usage()
             time.sleep(1.0)
 
-    def _display_results(self, text: str, results: List[dict], metadata: Dict[str, Any]):
+    def _display_results(self, text: str, results: list[dict], metadata: dict[str, Any]):
         self.results_textfield.value = text
         info_parts = []
         if metadata.get('file_type') == 'PDF':
@@ -936,8 +959,12 @@ class FletGUIApp:
                     content = OutputFormatter.format_html(text, [], metadata)
                 else:
                     content = OutputFormatter.format_txt(text, metadata)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
+
+                def _write_output():
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(content)
+
+                await asyncio.to_thread(_write_output)
             self._show_snack(f"Results saved to {path}")
         except Exception as ex:
             self._show_snack(f"Save error: {ex}")
@@ -1043,7 +1070,7 @@ class FletGUIApp:
         self.queue.put(("batch_queue_complete", total, successful, failed))
 
     def _log(self, message: str):
-        timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.datetime.now().astimezone().strftime('%H:%M:%S')
         entry = f"[{timestamp}] {message}"
         self.log_messages.append(entry)
         if len(self.log_messages) > 1000:

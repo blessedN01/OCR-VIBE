@@ -6,14 +6,15 @@ Provides a queue-based batch processing system for the GUI, managing a list of f
 to be processed sequentially with per-file progress bars and cancel functionality.
 Integrates with the OCR engine via callbacks.
 """
+from __future__ import annotations
 
 import logging
-import threading
 import queue
+import threading
 import time
-from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any
 from enum import Enum
+from pathlib import Path
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,11 @@ class BatchTask:
         self.progress: float = 0.0
         self.error_message: str = ""
         self.result_text: str = ""
-        self.start_time: Optional[float] = None
-        self.end_time: Optional[float] = None
+        self.start_time: float | None = None
+        self.end_time: float | None = None
 
     @property
-    def duration(self) -> Optional[float]:
+    def duration(self) -> float | None:
         if self.start_time and self.end_time:
             return self.end_time - self.start_time
         if self.start_time:
@@ -59,12 +60,12 @@ class BatchQueueManager:
         self,
         ocr_engine: Any,
         pdf_handler: Any,
-        config: Dict[str, Any],
-        on_progress: Optional[Callable] = None,
-        on_status_change: Optional[Callable] = None,
-        on_task_complete: Optional[Callable] = None,
-        on_queue_complete: Optional[Callable] = None,
-        on_log: Optional[Callable] = None,
+        config: dict[str, Any],
+        on_progress: Callable | None = None,
+        on_status_change: Callable | None = None,
+        on_task_complete: Callable | None = None,
+        on_queue_complete: Callable | None = None,
+        on_log: Callable | None = None,
     ):
         """
         Initialize the batch queue manager.
@@ -89,12 +90,12 @@ class BatchQueueManager:
         self.on_queue_complete = on_queue_complete or (lambda *args: None)
         self.on_log = on_log or (lambda *args: None)
 
-        self._tasks: Dict[str, BatchTask] = {}
+        self._tasks: dict[str, BatchTask] = {}
         self._queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
         self._cancel_event = threading.Event()
-        self._processing_thread: Optional[threading.Thread] = None
-        self._current_task_id: Optional[str] = None
+        self._processing_thread: threading.Thread | None = None
+        self._current_task_id: str | None = None
         self._running = False
 
     def add_file(self, file_path: Path) -> str:
@@ -117,7 +118,7 @@ class BatchQueueManager:
             self.on_log(f"Added to queue: {file_path.name}")
             return task_id
 
-    def add_files(self, file_paths: List[Path]) -> List[str]:
+    def add_files(self, file_paths: list[Path]) -> list[str]:
         """Add multiple files to the batch queue."""
         return [self.add_file(fp) for fp in file_paths]
 
@@ -141,11 +142,11 @@ class BatchQueueManager:
             self.on_status_change(task_id, TaskStatus.CANCELLED.value)
             return True
 
-    def get_task(self, task_id: str) -> Optional[BatchTask]:
+    def get_task(self, task_id: str) -> BatchTask | None:
         """Get a task by ID."""
         return self._tasks.get(task_id)
 
-    def get_all_tasks(self) -> List[BatchTask]:
+    def get_all_tasks(self) -> list[BatchTask]:
         """Get all tasks as a list."""
         return list(self._tasks.values())
 
@@ -186,7 +187,7 @@ class BatchQueueManager:
         self._running = False
         self.on_log("Batch processing stopped")
 
-    def clear_completed(self) -> List[str]:
+    def clear_completed(self) -> list[str]:
         """Remove all completed and failed tasks from the queue.
         
         Returns:
@@ -307,7 +308,7 @@ class BatchQueueManager:
             task.status = TaskStatus.CANCELLED
             return False
 
-        text, results = self.ocr_engine.extract_text(
+        text, _results = self.ocr_engine.extract_text(
             task.file_path,
             file_type='image',
             page_count=1
@@ -332,6 +333,7 @@ class BatchQueueManager:
 
         page_count = self.pdf_handler.get_page_count(task.file_path)
         pdf_type = self.pdf_handler.detect_pdf_type(task.file_path)
+        self.on_log(f"{task.file_path.name}: {pdf_type} PDF, {page_count} page(s)")
 
         progress_callback(30)
 
@@ -351,8 +353,8 @@ class BatchQueueManager:
                         try:
                             t = table.df.to_string(index=False)
                             table_texts.append(f"--- Table {i + 1} ---\n{t}")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self.on_log(f"Skipped table {i + 1} of {task.file_path.name}: {e}")
                     if table_texts:
                         text = text + "\n\n" + "\n\n".join(table_texts)
             except Exception as e:

@@ -8,24 +8,23 @@ with exploration of under-tried engines.
 
 Stats are stored in ~/.ocr-vibe/engine_stats.json and persisted atomically.
 """
+from __future__ import annotations
 
+import atexit
 import json
 import logging
 import math
 import os
-import atexit
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
-
-from .exceptions import OCRError
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 EXPLORATION_WEIGHT = 1.0
 
-DEFAULT_STATS: Dict[str, Any] = {
+DEFAULT_STATS: dict[str, Any] = {
     'engines': {},
 }
 
@@ -65,7 +64,7 @@ class EngineStatsTracker:
         EXPLORATION_WEIGHT * sqrt(ln(total_runs + 1))
     """
 
-    def __init__(self, stats_path: Optional[Path] = None):
+    def __init__(self, stats_path: Path | None = None):
         """
         Initialize the stats tracker.
 
@@ -73,7 +72,7 @@ class EngineStatsTracker:
             stats_path: Optional path to stats file. Defaults to ~/.ocr-vibe/engine_stats.json
         """
         self.stats_path = stats_path or _get_stats_path()
-        self.stats: Dict[str, Any] = {}
+        self.stats: dict[str, Any] = {}
         self._loaded = False
         self._dirty = False
         self._load()
@@ -83,8 +82,8 @@ class EngineStatsTracker:
         """Ensure the directory for the stats file exists."""
         try:
             self.stats_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not create stats directory {self.stats_path.parent}: {e}")
 
     def _load(self):
         """Load stats from disk if available."""
@@ -109,12 +108,12 @@ class EngineStatsTracker:
 
         self._loaded = True
 
-    def _deep_copy_default(self) -> Dict[str, Any]:
+    def _deep_copy_default(self) -> dict[str, Any]:
         """Create a fresh copy of the default stats structure."""
         return {'engines': {}}
 
     @staticmethod
-    def _lang_key(languages: List[str]) -> str:
+    def _lang_key(languages: list[str]) -> str:
         """Create a hashable key from a list of languages."""
         return '+'.join(sorted(languages))
 
@@ -143,7 +142,7 @@ class EngineStatsTracker:
         else:
             return '50+'
 
-    def _get_combo(self, lang_key: str, file_type_key: str, page_count_range: str) -> Dict[str, Any]:
+    def _get_combo(self, lang_key: str, file_type_key: str, page_count_range: str) -> dict[str, Any]:
         """
         Get or create the stats entry for a specific combination of
         languages, file type, and page count range.
@@ -154,7 +153,7 @@ class EngineStatsTracker:
         combo = engines.setdefault(combo_key, {})
         return combo
 
-    def _get_engine_stats(self, combo: Dict[str, Any], engine: str) -> Dict[str, Any]:
+    def _get_engine_stats(self, combo: dict[str, Any], engine: str) -> dict[str, Any]:
         """
         Get or create the stats entry for a specific engine within a combo.
         """
@@ -166,7 +165,7 @@ class EngineStatsTracker:
             'last_used': None,
         })
 
-    def get_score(self, engine: str, languages: List[str], file_type: str,
+    def get_score(self, engine: str, languages: list[str], file_type: str,
                   page_count: int = 1) -> float:
         """
         Compute the UCB-style score for an engine given the input context.
@@ -206,7 +205,7 @@ class EngineStatsTracker:
         return exploitation + exploration
 
     @staticmethod
-    def _total_runs(combo: Dict[str, Any]) -> int:
+    def _total_runs(combo: dict[str, Any]) -> int:
         """Total runs across all engines in a combo."""
         total = 0
         for engine_stats in combo.values():
@@ -214,10 +213,10 @@ class EngineStatsTracker:
                 total += engine_stats.get('successful_runs', 0) + engine_stats.get('failed_runs', 0)
         return total
 
-    def select_engine(self, available_engines: List[str], languages: List[str],
+    def select_engine(self, available_engines: list[str], languages: list[str],
                       file_type: str, page_count: int = 1,
-                      forced_engine: Optional[str] = None,
-                      first_run_order: Optional[List[str]] = None) -> List[str]:
+                      forced_engine: str | None = None,
+                      first_run_order: list[str] | None = None) -> list[str]:
         """
         Select the best engine for the given context, ranked by score.
 
@@ -259,8 +258,8 @@ class EngineStatsTracker:
 
         return self._rank_engines(available_engines, languages, file_type, page_count)
 
-    def _rank_engines(self, engines: List[str], languages: List[str],
-                      file_type: str, page_count: int) -> List[str]:
+    def _rank_engines(self, engines: list[str], languages: list[str],
+                      file_type: str, page_count: int) -> list[str]:
         """
         Rank engines by score (descending).
         """
@@ -271,7 +270,7 @@ class EngineStatsTracker:
         scores.sort(key=lambda x: x[1], reverse=True)
         return [e for e, _ in scores]
 
-    def record_result(self, engine: str, languages: List[str], file_type: str,
+    def record_result(self, engine: str, languages: list[str], file_type: str,
                       page_count: int, success: bool, confidence: float,
                       processing_time: float):
         """
@@ -299,7 +298,7 @@ class EngineStatsTracker:
         else:
             engine_stats['failed_runs'] += 1
 
-        engine_stats['last_used'] = datetime.utcnow().isoformat() + 'Z'
+        engine_stats['last_used'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         self._dirty = True
 
     def flush(self):

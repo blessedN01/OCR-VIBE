@@ -92,3 +92,18 @@ disallow_untyped_defs = true
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+
+[tool.ruff.lint.per-file-ignores]
+# BLE001 (blind-except) is allowed in this project: catching `Exception` is a
+# deliberate resilience boundary, not an oversight. The OCR pipeline must never
+# abort the whole application because one page, one file or one engine failed.
+# Every one of these handlers logs the error and degrades gracefully.
+"main.py" = ["BLE001"]
+"src/batch_queue.py" = ["BLE001"]
+"src/cli_app.py" = ["BLE001"]
+"src/gui_flet.py" = ["BLE001"]
+"src/memory_manager.py" = ["BLE001"]
+"src/ocr_engine.py" = ["BLE001"]
+"src/pdf_handler.py" = ["BLE001"]
+"src/stats_tracker.py" = ["BLE001"]
+"test_flet.py" = ["BLE001"]

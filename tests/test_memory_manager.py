@@ -5,15 +5,16 @@ Unit tests for Memory Manager Module.
 Tests memory limit enforcement and garbage collection.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.memory_manager import MemoryManager, ResourceManager, get_optimal_batch_size
 from src.exceptions import MemoryError
+from src.memory_manager import MemoryManager, ResourceManager, get_optimal_batch_size
 
 
 class TestMemoryManager:
@@ -42,9 +43,9 @@ class TestMemoryManager:
     def test_check_memory_limit_exceeded(self):
         """Test memory limit check raises when exceeded."""
         manager = MemoryManager(memory_limit_mb=1)
-        with patch.object(manager, 'get_memory_usage', return_value=2048.0):
-            with pytest.raises(MemoryError):
-                manager.check_memory_limit("test")
+        with patch.object(manager, 'get_memory_usage', return_value=2048.0), \
+             pytest.raises(MemoryError):
+            manager.check_memory_limit("test")
 
     def test_force_gc(self):
         """Test force_gc calls garbage collection."""
@@ -62,10 +63,9 @@ class TestMemoryManager:
     def test_memory_context_raises_on_exceed(self):
         """Test memory_context raises when limit exceeded."""
         manager = MemoryManager(memory_limit_mb=1)
-        with patch.object(manager, 'get_memory_usage', return_value=2048.0):
-            with pytest.raises(MemoryError):
-                with manager.memory_context("test"):
-                    pass
+        with patch.object(manager, 'get_memory_usage', return_value=2048.0), \
+             pytest.raises(MemoryError), manager.memory_context("test"):
+            pass
 
 
 class TestResourceManager:

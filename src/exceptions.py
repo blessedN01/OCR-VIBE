@@ -5,13 +5,15 @@ OCR Exceptions Module
 This module defines custom exception classes for OCR-related errors,
 providing standardized error handling across the OCR application.
 """
+from __future__ import annotations
 
-from typing import Optional, List, Dict, Any
+from typing import Any
+
 
 class OCRError(Exception):
     """Base exception class for OCR-related errors."""
 
-    def __init__(self, message: str, details: Optional[dict] = None):
+    def __init__(self, message: str, details: dict | None = None):
         super().__init__(message)
         self.message = message
         self.details = details or {}
@@ -20,8 +22,8 @@ class OCRError(Exception):
 class OCREngineNotAvailableError(OCRError):
     """Raised when no OCR engines are available."""
 
-    def __init__(self, engines_tried: Optional[List[str]] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, engines_tried: list[str] | None = None,
+                 details: dict[str, Any] | None = None):
         message = "No OCR engines available for processing."
         if engines_tried:
             message += f" Engines tried: {', '.join(engines_tried)}"
@@ -38,8 +40,8 @@ class OCREngineNotAvailableError(OCRError):
 class OCREngineInitializationError(OCRError):
     """Raised when OCR engine fails to initialize."""
 
-    def __init__(self, engine_name: str, original_error: Optional[Exception] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, engine_name: str, original_error: Exception | None = None,
+                 details: dict[str, Any] | None = None):
         message = f"Failed to initialize {engine_name} OCR engine."
         merged_details = {
             'engine': engine_name,
@@ -54,9 +56,9 @@ class OCREngineInitializationError(OCRError):
 class OCRProcessingError(OCRError):
     """Raised when OCR processing fails."""
 
-    def __init__(self, file_path: Optional[str] = None, engine_name: Optional[str] = None,
-                 original_error: Optional[Exception] = None, engines_tried: Optional[List[str]] = None,
-                 is_fatal: bool = False, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, file_path: str | None = None, engine_name: str | None = None,
+                 original_error: Exception | None = None, engines_tried: list[str] | None = None,
+                 is_fatal: bool = False, details: dict[str, Any] | None = None):
         message = "OCR processing failed."
         if file_path:
             message += f" File: {file_path}"
@@ -82,9 +84,9 @@ class OCRProcessingError(OCRError):
 class ImageProcessingError(OCRError):
     """Raised when image preprocessing fails."""
 
-    def __init__(self, file_path: Optional[str] = None, operation: Optional[str] = None,
-                 original_error: Optional[Exception] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, file_path: str | None = None, operation: str | None = None,
+                 original_error: Exception | None = None,
+                 details: dict[str, Any] | None = None):
         message = "Image processing failed."
         if operation:
             message += f" Operation: {operation}"
@@ -107,9 +109,9 @@ class ImageProcessingError(OCRError):
 class PDFProcessingError(OCRError):
     """Raised when PDF processing fails."""
 
-    def __init__(self, file_path: Optional[str] = None, operation: Optional[str] = None,
-                 original_error: Optional[Exception] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, file_path: str | None = None, operation: str | None = None,
+                 original_error: Exception | None = None,
+                 details: dict[str, Any] | None = None):
         message = "PDF processing failed."
         if operation:
             message += f" Operation: {operation}"
@@ -132,9 +134,9 @@ class PDFProcessingError(OCRError):
 class MemoryError(OCRError):
     """Raised when memory limits are exceeded."""
 
-    def __init__(self, operation: str, memory_used: Optional[int] = None,
-                 memory_limit: Optional[int] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, operation: str, memory_used: int | None = None,
+                 memory_limit: int | None = None,
+                 details: dict[str, Any] | None = None):
         message = f"Memory limit exceeded during {operation}."
         merged_details = {
             'operation': operation,
@@ -150,8 +152,8 @@ class MemoryError(OCRError):
 class ResourceCleanupError(OCRError):
     """Raised when resource cleanup fails."""
 
-    def __init__(self, resource_type: str, original_error: Optional[Exception] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, resource_type: str, original_error: Exception | None = None,
+                 details: dict[str, Any] | None = None):
         message = f"Failed to cleanup {resource_type} resources."
         merged_details = {
             'resource_type': resource_type,
@@ -166,9 +168,9 @@ class ResourceCleanupError(OCRError):
 class OCREngineFallbackError(OCRError):
     """Raised when all OCR engines fail during fallback attempts."""
 
-    def __init__(self, file_path: Optional[str] = None, engines_tried: Optional[List[str]] = None,
-                 original_errors: Optional[Dict[str, str]] = None,
-                 details: Optional[Dict[str, Any]] = None):
+    def __init__(self, file_path: str | None = None, engines_tried: list[str] | None = None,
+                 original_errors: dict[str, str] | None = None,
+                 details: dict[str, Any] | None = None):
         message = "All OCR engines failed."
         if file_path:
             message += f" File: {file_path}"

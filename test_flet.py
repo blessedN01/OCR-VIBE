@@ -1,5 +1,5 @@
+
 import flet as ft
-import inspect
 
 fp = ft.FilePicker()
 print("FilePicker MRO:", [c.__name__ for c in ft.FilePicker.__mro__])
@@ -11,15 +11,17 @@ for attr in sorted(dir(fp)):
         try:
             val = getattr(fp, attr, None)
             print(f"{attr}: {val}")
-        except:
-            pass
+        except Exception as e:
+            print(f"{attr}: <error {e}>")
 
 print()
 # Check the base_control module
 from flet.controls.base_control import control
+
 print("control function:", control)
 
 # Check what the Service class registers
 from flet.controls.services.service import Service
+
 print()
 print("Service MRO:", [c.__name__ for c in Service.__mro__])

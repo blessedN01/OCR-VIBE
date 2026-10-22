@@ -4,8 +4,8 @@ OCR Text Extractor - Main Entry Point
 Standalone OCR application for extracting text from images and PDFs
 """
 
+import logging
 import sys
-import os
 from pathlib import Path
 
 src_dir = Path(__file__).parent / "src"
@@ -19,6 +19,8 @@ def main():
             from src.cli_app import cli
             cli()
         else:
+            logging.basicConfig(level=logging.INFO)
+
             import flet as ft
 
             def main_gui(page: ft.Page):

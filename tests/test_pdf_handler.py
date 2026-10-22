@@ -5,15 +5,16 @@ Unit tests for PDF Handler Module.
 Tests PDF type detection, page counting, and text extraction with mocks.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, mock_open
-from pathlib import Path
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock, mock_open, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.pdf_handler import PDFHandler
 from src.exceptions import PDFProcessingError
+from src.pdf_handler import PDFHandler
 
 # Mark tests that require optional dependencies
 pytestmark = pytest.mark.skipif(
@@ -93,10 +94,10 @@ class TestPDFHandler:
             mock_reader = MagicMock()
             mock_reader.pages = [MagicMock(), MagicMock(), MagicMock()]
 
-            with patch('builtins.open', mock_open()):
-                with patch('PyPDF2.PdfReader', return_value=mock_reader):
-                    count = handler.get_page_count(Path("test.pdf"))
-                    assert count == 3
+            with patch('builtins.open', mock_open()), \
+                 patch('PyPDF2.PdfReader', return_value=mock_reader):
+                count = handler.get_page_count(Path("test.pdf"))
+                assert count == 3
 
     def test_get_page_count_fallback_to_pymupdf(self, mock_ocr_engine):
         """Test page count fallback to PyMuPDF when PyPDF2 fails."""

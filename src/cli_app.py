@@ -6,15 +6,14 @@ This module provides a command-line interface for the OCR application using Clic
 It supports processing single files, directories, and batch operations with various
 output formats and configuration options.
 """
+from __future__ import annotations
 
 import json
-import csv
 import logging
 import multiprocessing
-import os
-from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
 import sys
+from pathlib import Path
+from typing import Any
 
 try:
     import click
@@ -30,24 +29,25 @@ try:
 except ImportError:
     TQDM_AVAILABLE = False
 
+from .config_loader import apply_cli_overrides, get_config_parser
+from .exceptions import (
+    ImageProcessingError,
+    MemoryError,
+    OCREngineNotAvailableError,
+    OCRProcessingError,
+    PDFProcessingError,
+)
 from .ocr_engine import OCREngine, get_available_engines
 from .pdf_handler import PDFHandler
-from .config_loader import load_config, apply_cli_overrides, get_config_parser
-from .exceptions import (
-    OCRError, OCREngineNotAvailableError, OCREngineInitializationError,
-    OCRProcessingError, ImageProcessingError, PDFProcessingError, MemoryError,
-    OCREngineFallbackError
-)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 # Version information
 __version__ = "2.0.0"
 
 
-def parse_page_ranges(page_spec: str) -> List[int]:
+def parse_page_ranges(page_spec: str) -> list[int]:
     """
     Parse a page range string like '1-3,5,7-9' into a list of 1-based page numbers.
 
@@ -80,7 +80,7 @@ class OutputFormatter:
     """Handles different output formats for OCR results."""
 
     @staticmethod
-    def format_txt(text: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+    def format_txt(text: str, metadata: dict[str, Any] | None = None) -> str:
         """Format as plain text."""
         if metadata:
             header = f"# OCR Results\n# File: {metadata.get('file_path', 'Unknown')}\n"
@@ -90,7 +90,7 @@ class OutputFormatter:
         return text
 
     @staticmethod
-    def format_json(text: str, results: List[Dict], metadata: Optional[Dict[str, Any]] = None) -> str:
+    def format_json(text: str, results: list[dict], metadata: dict[str, Any] | None = None) -> str:
         """Format as JSON."""
         output = {
             "text": text,
@@ -100,7 +100,7 @@ class OutputFormatter:
         return json.dumps(output, indent=2, ensure_ascii=False)
 
     @staticmethod
-    def format_csv(text: str, results: List[Dict], metadata: Optional[Dict[str, Any]] = None) -> str:
+    def format_csv(text: str, results: list[dict], metadata: dict[str, Any] | None = None) -> str:
         """Format as CSV."""
         if not results:
             return "No results found"
@@ -129,7 +129,7 @@ class OutputFormatter:
                     x1, y1 = coords[0]
                     x2, y2 = coords[1]
                     x3, y3 = coords[2]
-                    x4, y4 = coords[3]
+                    _x4, _y4 = coords[3]
                     text_part = str(result[1]).replace('"', '""')
                     confidence = result[2]
                     output_lines.append(f'"{text_part}",{confidence},{x1},{y1},{x2},{y2},{x3},{y3}')
@@ -143,7 +143,7 @@ class OutputFormatter:
         return "\n".join(output_lines)
 
     @staticmethod
-    def format_md(text: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+    def format_md(text: str, metadata: dict[str, Any] | None = None) -> str:
         """Format as Markdown with metadata header."""
         lines = []
         lines.append("# OCR Results\n")
@@ -164,11 +164,10 @@ class OutputFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_docx(text: str, metadata: Optional[Dict[str, Any]] = None, output_path: Optional[Path] = None) -> str:
+    def format_docx(text: str, metadata: dict[str, Any] | None = None, output_path: Path | None = None) -> str:
         """Format as DOCX (Word document)."""
         try:
             from docx import Document
-            from docx.shared import Pt, Inches
             DOCX_AVAILABLE = True
         except ImportError:
             DOCX_AVAILABLE = False
@@ -193,7 +192,7 @@ class OutputFormatter:
         return ""
 
     @staticmethod
-    def format_html(text: str, results: List[Dict], metadata: Optional[Dict[str, Any]] = None) -> str:
+    def format_html(text: str, results: list[dict], metadata: dict[str, Any] | None = None) -> str:
         """Format as annotated HTML with confidence-colored bounding box overlays."""
         lines = []
         lines.append("<!DOCTYPE html>")
@@ -242,7 +241,7 @@ class OutputFormatter:
         return "\n".join(lines)
 
 
-def save_output(content: str, output_path: Optional[Path], output_format: str):
+def save_output(content: str, output_path: Path | None, output_format: str):
     """Save content to file or print to stdout."""
     if output_path:
         try:
@@ -250,7 +249,7 @@ def save_output(content: str, output_path: Optional[Path], output_format: str):
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             logger.info(f"Results saved to {output_path}")
-        except PermissionError as e:
+        except PermissionError:
             logger.error(f"Permission denied writing to {output_path}. Please check directory permissions.")
             raise
         except OSError as e:
@@ -289,7 +288,7 @@ def _create_engine_from_config(config: dict) -> OCREngine:
     )
 
 
-def _process_single_file_task(args: Tuple[Path, dict, Optional[str]]) -> Tuple[Path, bool]:
+def _process_single_file_task(args: tuple[Path, dict, str | None]) -> tuple[Path, bool]:
     """
     Process a single file. Designed to be used with multiprocessing.Pool.
 
@@ -399,7 +398,6 @@ def _format_tables(tables: list, output_format: str) -> str:
 
     if output_format in ('json', 'csv'):
         # For JSON/CSV, export tables to their respective formats
-        import io
         output_parts = []
         for i, table in enumerate(tables):
             try:
@@ -426,11 +424,11 @@ def _format_tables(tables: list, output_format: str) -> str:
 
 
 def process_single_file(file_path: Path, ocr_engine: OCREngine, pdf_handler: PDFHandler,
-                        output_format: str, output_path: Optional[Path] = None,
-                        engine: Optional[str] = None, post_process: bool = False,
+                        output_format: str, output_path: Path | None = None,
+                        engine: str | None = None, post_process: bool = False,
                         extract_tables: bool = False, preserve_layout: bool = False,
                         searchable_pdf: bool = False,
-                        pages: Optional[List[int]] = None) -> bool:
+                        pages: list[int] | None = None) -> bool:
     """Process a single file (image or PDF) with improved error handling."""
     try:
         is_pdf = file_path.suffix.lower() in ['.pdf']
@@ -528,13 +526,13 @@ def process_single_file(file_path: Path, ocr_engine: OCREngine, pdf_handler: PDF
         if e.details and 'suggestion' in e.details:
             logger.error(f"Suggestion: {e.details['suggestion']}")
         return False
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         logger.error(f"File not found: {file_path}. Please check the file path and ensure it exists.")
         return False
-    except PermissionError as e:
+    except PermissionError:
         logger.error(f"Permission denied accessing {file_path}. Please check file permissions.")
         return False
-    except IsADirectoryError as e:
+    except IsADirectoryError:
         logger.error(f"Path {file_path} is a directory, not a file. Please specify a file path.")
         return False
     except OSError as e:
@@ -550,12 +548,12 @@ def process_single_file(file_path: Path, ocr_engine: OCREngine, pdf_handler: PDF
 
 
 def process_directory(directory_path: Path, ocr_engine: OCREngine, pdf_handler: PDFHandler,
-                      output_format: str, output_dir: Optional[Path] = None,
-                      recursive: bool = False, engine: Optional[str] = None,
+                      output_format: str, output_dir: Path | None = None,
+                      recursive: bool = False, engine: str | None = None,
                       parallel: bool = False, post_process: bool = False,
                       extract_tables: bool = False, preserve_layout: bool = False,
                       searchable_pdf: bool = False,
-                      pages: Optional[List[int]] = None) -> int:
+                      pages: list[int] | None = None) -> int:
     """Process all supported files in a directory."""
     supported_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.pdf'}
 
@@ -664,8 +662,11 @@ def process_directory(directory_path: Path, ocr_engine: OCREngine, pdf_handler: 
 @click.pass_context
 def cli(ctx, verbose):
     """OCR Text Extractor - Extract text from images and PDFs via command line."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format='%(levelname)s: %(message)s',
+    )
     if verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
 
 
@@ -892,13 +893,13 @@ def batch_process(batch_file, languages, confidence, output_dir, format, engine,
     try:
         with open(batch_file, 'r', encoding='utf-8') as f:
             file_paths = [Path(line.strip()) for line in f if line.strip()]
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         click.echo(f"Batch file not found: {batch_file}. Please check the file path.", err=True)
         sys.exit(1)
-    except PermissionError as e:
+    except PermissionError:
         click.echo(f"Permission denied reading batch file: {batch_file}. Please check file permissions.", err=True)
         sys.exit(1)
-    except UnicodeDecodeError as e:
+    except UnicodeDecodeError:
         click.echo(f"Batch file encoding error: {batch_file}. Ensure the file is UTF-8 encoded text.", err=True)
         sys.exit(1)
     except Exception as e:
@@ -951,11 +952,6 @@ def batch_process(batch_file, languages, confidence, output_dir, format, engine,
             output_file = output_dir / f"{file_path.stem}.{config['output_format']}"
         else:
             output_file = None
-
-        search_output = None
-        if config.get('searchable_pdf', False) and file_path.suffix.lower() == '.pdf':
-            if output_dir:
-                search_output = output_dir / f"{file_path.stem}_searchable.pdf"
 
         if process_single_file(file_path, ocr_engine, pdf_handler, config['output_format'],
                               output_file, config['engine'], config.get('post_process', False),

@@ -9,12 +9,12 @@ This module provides YAML/JSON configuration file support with a layered merge s
 
 Shallow merge is used (top-level keys only). CLI flags completely replace config values when present.
 """
+from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 try:
     import yaml
@@ -28,7 +28,7 @@ from .exceptions import OCRError
 logger = logging.getLogger(__name__)
 
 # Default configuration values
-DEFAULT_CONFIG: Dict[str, Any] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     'languages': ['en'],
     'confidence_threshold': 0.5,
     'output_format': 'txt',
@@ -51,7 +51,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 SUPPORTED_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
 
 
-def _find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
+def _find_project_config(start_path: Path | None = None) -> Path | None:
     """
     Walk up from start_path (or CWD) to find ocr-vibe.yaml, ocr-vibe.yml, or ocr-vibe.json.
 
@@ -79,7 +79,7 @@ def _find_project_config(start_path: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-def _load_config_file(config_path: Path) -> Dict[str, Any]:
+def _load_config_file(config_path: Path) -> dict[str, Any]:
     """
     Load configuration from a YAML or JSON file.
 
@@ -126,7 +126,7 @@ def _load_config_file(config_path: Path) -> Dict[str, Any]:
         )
 
 
-def _get_home_config_path() -> Optional[Path]:
+def _get_home_config_path() -> Path | None:
     """
     Get path to home configuration file.
 
@@ -144,7 +144,7 @@ def _get_home_config_path() -> Optional[Path]:
     return config_path if config_path.is_file() else None
 
 
-def _shallow_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def _shallow_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """
     Shallow merge two dictionaries. Only top-level keys are merged.
     Nested dictionaries are completely replaced, not merged recursively.
@@ -165,7 +165,7 @@ def _shallow_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
     return merged
 
 
-def load_config(start_path: Optional[Path] = None) -> Dict[str, Any]:
+def load_config(start_path: Path | None = None) -> dict[str, Any]:
     """
     Load configuration with layered merge strategy.
 
@@ -206,7 +206,7 @@ def load_config(start_path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
-def apply_cli_overrides(config: Dict[str, Any], cli_args: Dict[str, Any]) -> Dict[str, Any]:
+def apply_cli_overrides(config: dict[str, Any], cli_args: dict[str, Any]) -> dict[str, Any]:
     """
     Apply CLI flag overrides to configuration (highest precedence).
 
@@ -228,7 +228,7 @@ def apply_cli_overrides(config: Dict[str, Any], cli_args: Dict[str, Any]) -> Dic
     return updated_config
 
 
-def get_config_parser(start_path: Optional[Path] = None) -> Dict[str, Any]:
+def get_config_parser(start_path: Path | None = None) -> dict[str, Any]:
     """
     Get default configuration loaded from project and home configs.
 

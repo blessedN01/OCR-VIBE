@@ -5,15 +5,16 @@ Unit tests for CLI Application Module.
 Tests Click CLI invocation with CliRunner and format parsing.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-from click.testing import CliRunner
 import sys
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from click.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.cli_app import cli, parse_page_ranges, OutputFormatter
+from src.cli_app import OutputFormatter, cli, parse_page_ranges
 
 
 class TestParsePageRanges:

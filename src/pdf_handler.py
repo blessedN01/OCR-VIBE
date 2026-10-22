@@ -12,66 +12,62 @@ Libraries used:
 - PyMuPDF (fitz): For image extraction and advanced PDF handling
 - pdf2image: For converting PDF pages to images for OCR
 """
+from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple, Union, Dict, Any
-from pathlib import Path
-import tempfile
-import os
 import time
-from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
-    logging.error("pdfplumber is required for PDF text extraction. Install with: pip install pdfplumber")
+    logger.error("pdfplumber is required for PDF text extraction. Install with: pip install pdfplumber")
 
 try:
     import PyPDF2
     PYPDF2_AVAILABLE = True
 except ImportError:
     PYPDF2_AVAILABLE = False
-    logging.error("PyPDF2 is required for PDF operations. Install with: pip install PyPDF2")
+    logger.error("PyPDF2 is required for PDF operations. Install with: pip install PyPDF2")
 
 try:
     import pymupdf as fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    logging.error("PyMuPDF is required for advanced PDF handling. Install with: pip install PyMuPDF")
+    logger.error("PyMuPDF is required for advanced PDF handling. Install with: pip install PyMuPDF")
 
 try:
     from pdf2image import convert_from_path
     PDF2IMAGE_AVAILABLE = True
 except ImportError:
     PDF2IMAGE_AVAILABLE = False
-    logging.error("pdf2image is required for PDF to image conversion. Install with: pip install pdf2image")
-    logging.error("Note: pdf2image also requires poppler-utils to be installed on your system.")
+    logger.error("pdf2image is required for PDF to image conversion. Install with: pip install pdf2image")
+    logger.error("Note: pdf2image also requires poppler-utils to be installed on your system.")
 
 try:
     from PIL import Image
     PILLOW_AVAILABLE = True
 except ImportError:
     PILLOW_AVAILABLE = False
-    logging.error("Pillow is required for image processing. Install with: pip install pillow")
+    logger.error("Pillow is required for image processing. Install with: pip install pillow")
 
 try:
     import camelot
     CAMELOT_AVAILABLE = True
 except ImportError:
     CAMELOT_AVAILABLE = False
-    logging.warning("camelot-py not installed. Table extraction will be unavailable. Install with: pip install camelot-py[cv]")
+    logger.warning("camelot-py not installed. Table extraction will be unavailable. Install with: pip install camelot-py[cv]")
 
 # Import custom modules
-from .ocr_engine import OCREngine
-from .exceptions import PDFProcessingError, MemoryError
+from .exceptions import MemoryError, PDFProcessingError
 from .memory_manager import MemoryManager, ResourceManager
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from .ocr_engine import OCREngine
 
 
 class PDFHandler:
@@ -82,7 +78,7 @@ class PDFHandler:
     from image-based PDFs, with OCR integration for scanned documents.
     """
 
-    def __init__(self, ocr_engine: Optional[OCREngine] = None, memory_limit_mb: Optional[int] = None):
+    def __init__(self, ocr_engine: OCREngine | None = None, memory_limit_mb: int | None = None):
         """
         Initialize the PDF handler.
 
@@ -95,11 +91,11 @@ class PDFHandler:
         self.resource_manager = ResourceManager()
 
         # Cache for PDF type detection to avoid repeated analysis
-        self._type_cache: Dict[str, str] = {}
-        self._cache_expiry: Dict[str, float] = {}
+        self._type_cache: dict[str, str] = {}
+        self._cache_expiry: dict[str, float] = {}
         self._cache_ttl = 300  # 5 minutes TTL for cache
 
-    def _get_cache_key(self, pdf_path: Union[str, Path]) -> str:
+    def _get_cache_key(self, pdf_path: str | Path) -> str:
         """Generate cache key for PDF path."""
         return str(Path(pdf_path).resolve())
 
@@ -109,20 +105,20 @@ class PDFHandler:
             return False
         return time.time() < self._cache_expiry[cache_key]
 
-    def _get_cached_type(self, pdf_path: Union[str, Path]) -> Optional[str]:
+    def _get_cached_type(self, pdf_path: str | Path) -> str | None:
         """Get cached PDF type if available and valid."""
         cache_key = self._get_cache_key(pdf_path)
         if self._is_cache_valid(cache_key):
             return self._type_cache.get(cache_key)
         return None
 
-    def _set_cached_type(self, pdf_path: Union[str, Path], pdf_type: str):
+    def _set_cached_type(self, pdf_path: str | Path, pdf_type: str):
         """Cache PDF type with expiry."""
         cache_key = self._get_cache_key(pdf_path)
         self._type_cache[cache_key] = pdf_type
         self._cache_expiry[cache_key] = time.time() + self._cache_ttl
 
-    def detect_pdf_type(self, pdf_path: Union[str, Path]) -> str:
+    def detect_pdf_type(self, pdf_path: str | Path) -> str:
         """
         Detect whether PDF is text-based or image-based with caching and error handling.
 
@@ -194,7 +190,7 @@ class PDFHandler:
                 self._set_cached_type(pdf_path, pdf_type)
                 return pdf_type
 
-    def extract_text_from_text_pdf(self, pdf_path: Union[str, Path]) -> str:
+    def extract_text_from_text_pdf(self, pdf_path: str | Path) -> str:
         """
         Extract text from a text-based PDF with error handling.
 
@@ -254,7 +250,7 @@ class PDFHandler:
                     details={'suggestion': "PDF may be corrupted, encrypted, or in an unsupported format"}
                 )
 
-    def extract_images_from_pdf(self, pdf_path: Union[str, Path]) -> List[Image.Image]:
+    def extract_images_from_pdf(self, pdf_path: str | Path) -> list[Image.Image]:
         """
         Extract images from PDF pages using pdf2image with error handling.
 
@@ -309,8 +305,8 @@ class PDFHandler:
                     details={'suggestion': "Ensure pdf2image and poppler-utils are properly installed"}
                 )
 
-    def process_image_pdf_with_ocr(self, pdf_path: Union[str, Path], engine: Optional[str] = None,
-                                    pages: Optional[List[int]] = None) -> str:
+    def process_image_pdf_with_ocr(self, pdf_path: str | Path, engine: str | None = None,
+                                    pages: list[int] | None = None) -> str:
         """
         Process image-based PDF using OCR with memory management and error handling.
 
@@ -357,8 +353,8 @@ class PDFHandler:
                 original_error=e
             )
 
-    def extract_text(self, pdf_path: Union[str, Path], engine: Optional[str] = None,
-                     pages: Optional[List[int]] = None) -> str:
+    def extract_text(self, pdf_path: str | Path, engine: str | None = None,
+                     pages: list[int] | None = None) -> str:
         """
         Extract text from PDF, automatically detecting type and using appropriate method.
 
@@ -427,7 +423,7 @@ class PDFHandler:
                 original_error=e
             )
 
-    def get_page_count(self, pdf_path: Union[str, Path]) -> int:
+    def get_page_count(self, pdf_path: str | Path) -> int:
         """
         Get the number of pages in a PDF with fallback libraries.
 
@@ -464,8 +460,8 @@ class PDFHandler:
                 details={'suggestion': "Install at least one PDF library: pip install PyPDF2 or pip install PyMuPDF"}
             )
 
-    def extract_text_by_page(self, pdf_path: Union[str, Path], engine: Optional[str] = None,
-                             pages: Optional[List[int]] = None) -> List[str]:
+    def extract_text_by_page(self, pdf_path: str | Path, engine: str | None = None,
+                             pages: list[int] | None = None) -> list[str]:
         """
         Extract text from each page separately with error handling.
 
@@ -541,9 +537,9 @@ class PDFHandler:
                     original_error=e
                 )
 
-    def extract_tables(self, pdf_path: Union[str, Path],
-                       pages: Optional[str] = None,
-                       flavor: str = 'stream') -> List[Any]:
+    def extract_tables(self, pdf_path: str | Path,
+                       pages: str | None = None,
+                       flavor: str = 'stream') -> list[Any]:
         """
         Extract tables from a PDF using camelot-py.
 
@@ -601,10 +597,10 @@ class PDFHandler:
                     details={'suggestion': "PDF may not contain extractable tables or is in an unsupported format"}
                 )
 
-    def generate_searchable_pdf(self, pdf_path: Union[str, Path],
+    def generate_searchable_pdf(self, pdf_path: str | Path,
                                 ocr_engine: OCREngine,
-                                pages: Optional[List[int]] = None,
-                                output_path: Optional[Union[str, Path]] = None) -> str:
+                                pages: list[int] | None = None,
+                                output_path: str | Path | None = None) -> str:
         """
         Generate a searchable PDF with an embedded OCR text layer using PyMuPDF.
 
@@ -678,9 +674,6 @@ class PDFHandler:
                     # Run OCR on the page image
                     text, _ = ocr_engine.extract_text(img, file_type='pdf', page_count=1)
 
-                    # Get page dimensions for text positioning
-                    page_rect = page.rect
-
                     if text and text.strip():
                         page.insert_textbox(
                             page.rect,
@@ -716,8 +709,8 @@ class PDFHandler:
 
 
 # Convenience functions
-def extract_text_from_pdf(pdf_path: Union[str, Path],
-                         ocr_languages: Optional[List[str]] = None) -> str:
+def extract_text_from_pdf(pdf_path: str | Path,
+                         ocr_languages: list[str] | None = None) -> str:
     """
     Convenience function to extract text from a PDF.
 
@@ -733,7 +726,7 @@ def extract_text_from_pdf(pdf_path: Union[str, Path],
     return handler.extract_text(pdf_path)
 
 
-def get_pdf_info(pdf_path: Union[str, Path]) -> dict:
+def get_pdf_info(pdf_path: str | Path) -> dict:
     """
     Get basic information about a PDF with error handling.
 

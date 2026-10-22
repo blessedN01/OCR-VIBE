@@ -6,25 +6,27 @@ This module provides memory usage monitoring and management utilities
 for the OCR application, including memory limits, cleanup, and graceful
 degradation for memory-constrained environments.
 """
+from __future__ import annotations
 
-import logging
-import psutil
 import gc
+import logging
 import os
-from typing import Optional, Callable, Any
 from contextlib import contextmanager
 from functools import wraps
+from typing import Any, Callable
+
+import psutil
+
+logger = logging.getLogger(__name__)
 
 try:
     import resource
     RESOURCE_AVAILABLE = True
 except ImportError:
     RESOURCE_AVAILABLE = False
-    logging.warning("resource module not available. Memory limits may not work on Windows.")
+    logger.warning("resource module not available. Memory limits may not work on Windows.")
 
 from .exceptions import MemoryError
-
-logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
@@ -34,7 +36,7 @@ class MemoryManager:
     Provides memory monitoring, limits, and cleanup functionality.
     """
 
-    def __init__(self, memory_limit_mb: Optional[int] = None):
+    def __init__(self, memory_limit_mb: int | None = None):
         """
         Initialize memory manager.
 
@@ -101,7 +103,7 @@ class MemoryManager:
             self.check_memory_limit(f"end of {operation}")
 
 
-def memory_limited(memory_limit_mb: Optional[int] = None):
+def memory_limited(memory_limit_mb: int | None = None):
     """
     Decorator to limit memory usage for functions.
 
@@ -155,7 +157,7 @@ def temporary_memory_limit(limit_mb: int):
             logger.error(f"Failed to restore memory limits: {e}")
 
 
-def get_optimal_batch_size(image_count: int, available_memory_mb: Optional[int] = None) -> int:
+def get_optimal_batch_size(image_count: int, available_memory_mb: int | None = None) -> int:
     """
     Calculate optimal batch size based on available memory.
 
@@ -198,7 +200,7 @@ class ResourceManager:
         self.cleanup_on_exit = cleanup_on_exit
         self.resources = []
 
-    def add_resource(self, resource, cleanup_func: Optional[Callable] = None):
+    def add_resource(self, resource, cleanup_func: Callable | None = None):
         """
         Add a resource to be managed.
 

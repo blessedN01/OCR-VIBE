@@ -5,20 +5,19 @@ Unit tests for OCR Engine Module.
 Tests preprocessing, engine fallback, confidence filtering, and plugin system.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-import tempfile
-import os
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.ocr_engine import OCREngine, BaseOCREngine, EngineRegistry, get_available_engines
 from src.exceptions import (
-    OCRError, OCREngineNotAvailableError, OCRProcessingError, ImageProcessingError
+    OCREngineNotAvailableError,
 )
+from src.ocr_engine import BaseOCREngine, EngineRegistry, OCREngine, get_available_engines
 
 
 class TestOCREngine:
@@ -92,9 +91,9 @@ class TestOCREngine:
         """Test is_available returns False when no engines available."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', False), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
-            with pytest.raises(OCREngineNotAvailableError):
-                OCREngine()
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             pytest.raises(OCREngineNotAvailableError):
+            OCREngine()
 
     def test_map_to_paddleocr_lang(self):
         """Test language code mapping to PaddleOCR format."""
