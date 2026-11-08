@@ -306,14 +306,18 @@ class PDFHandler:
                 )
 
     def process_image_pdf_with_ocr(self, pdf_path: str | Path, engine: str | None = None,
-                                    pages: list[int] | None = None) -> str:
+                                    pages: list[int] | None = None,
+                                    page_progress_callback=None):
         """
         Process image-based PDF using OCR with memory management and error handling.
+        Stream page by page to minimize memory usage.
 
         Args:
             pdf_path: Path to PDF file
             engine: Specific OCR engine to use
             pages: Optional list of 1-based page numbers to process
+            page_progress_callback: Callable(page_number, total_pages) called after
+                each successfully processed page for progress feedback.
 
         Returns:
             Extracted text from all pages
@@ -322,27 +326,79 @@ class PDFHandler:
             PDFProcessingError: If OCR processing fails
         """
         try:
-            images = self.extract_images_from_pdf(pdf_path)
+            if not PYMUPDF_AVAILABLE:
+                # Fallback to legacy behavior
+                images = self.extract_images_from_pdf(pdf_path)
+                full_text = []
+                page_set = set(pages) if pages else None
+
+                for i, image in enumerate(images):
+                    if page_set is not None and (i + 1) not in page_set:
+                        continue
+                    try:
+                        logger.info(f"Processing page {i + 1}/{len(images)}")
+                        with self.memory_manager.memory_context(f"OCR page {i + 1}"):
+                            text, _ = self.ocr_engine.extract_text(image, engine)
+                            if text:
+                                full_text.append(text)
+                        if page_progress_callback is not None:
+                            page_progress_callback(i + 1, len(images))
+                    except MemoryError:
+                        logger.warning(f"Memory limit exceeded processing page {i + 1}, skipping...")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Error processing page {i + 1}: {e}")
+                        continue
+
+                return '\n\n'.join(full_text)
+
+            doc = fitz.open(str(pdf_path))
+            self.resource_manager.add_resource(doc, lambda d: d.close())
             full_text = []
             page_set = set(pages) if pages else None
+            total_pages = len(doc)
 
-            for i, image in enumerate(images):
-                if page_set is not None and (i + 1) not in page_set:
-                    continue
+            try:
+                for page_num in range(total_pages):
+                    if page_set is not None and (page_num + 1) not in page_set:
+                        continue
+                    try:
+                        logger.info(f"Processing page {page_num + 1}/{total_pages}")
+                        with self.memory_manager.memory_context(f"OCR page {page_num + 1}"):
+                            page = doc[page_num]
+                            pix = page.get_pixmap(dpi=150)
+                            if pix is None:
+                                continue
+                            if PILLOW_AVAILABLE:
+                                mode = "RGBA" if pix.alpha else "RGB"
+                                img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+                                if mode == "RGBA":
+                                    img = img.convert("RGB")
+                            else:
+                                import numpy as _np
+                                img = _np.frombuffer(pix.samples, dtype=_np.uint8).reshape(
+                                    pix.height, pix.width, pix.n
+                                )
+                                img = Image.fromarray(img, mode='RGB' if pix.n == 3 else 'RGBA').convert('RGB')
+                            text, _ = self.ocr_engine.extract_text(img, engine)
+                            if text:
+                                full_text.append(text)
+                            pix = None
+                            img = None
+                    except MemoryError:
+                        logger.warning(f"Memory limit exceeded processing page {page_num + 1}, skipping...")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Error processing page {page_num + 1}: {e}")
+                        continue
+                    if page_progress_callback is not None:
+                        page_progress_callback(page_num + 1, total_pages)
+                return '\n\n'.join(full_text)
+            finally:
                 try:
-                    logger.info(f"Processing page {i + 1}/{len(images)}")
-                    with self.memory_manager.memory_context(f"OCR page {i + 1}"):
-                        text, _ = self.ocr_engine.extract_text(image, engine)
-                        if text:
-                            full_text.append(text)
-                except MemoryError:
-                    logger.warning(f"Memory limit exceeded processing page {i + 1}, skipping...")
-                    continue
-                except Exception as e:
-                    logger.warning(f"Error processing page {i + 1}: {e}")
-                    continue
-
-            return '\n\n'.join(full_text)
+                    doc.close()
+                except Exception as close_err:
+                    logger.warning(f"Error closing PDF document: {close_err}")
 
         except (PDFProcessingError, MemoryError):
             raise
@@ -354,7 +410,8 @@ class PDFHandler:
             )
 
     def extract_text(self, pdf_path: str | Path, engine: str | None = None,
-                     pages: list[int] | None = None) -> str:
+                     pages: list[int] | None = None,
+                     page_progress_callback=None) -> str:
         """
         Extract text from PDF, automatically detecting type and using appropriate method.
 
@@ -362,6 +419,8 @@ class PDFHandler:
             pdf_path: Path to PDF file
             engine: Specific OCR engine to use
             pages: Optional list of 1-based page numbers to extract
+            page_progress_callback: Callable(page_number, total_pages) called after
+                each successfully processed page for progress feedback.
 
         Returns:
             Extracted text
@@ -392,6 +451,7 @@ class PDFHandler:
                 page_texts = []
                 with pdfplumber.open(pdf_path) as pdf:
                     page_set = set(pages) if pages else None
+                    total_pdf_pages = len(pdf.pages)
                     for page_num, page in enumerate(pdf.pages):
                         if page_set is not None and (page_num + 1) not in page_set:
                             continue
@@ -402,11 +462,14 @@ class PDFHandler:
                         except Exception as e:
                             logger.warning(f"Error extracting text from page {page_num + 1}: {e}")
                             continue
+                        if page_progress_callback is not None:
+                            page_progress_callback(page_num + 1, total_pdf_pages)
 
                 return '\n\n'.join(page_texts)
 
             elif pdf_type == 'image':
-                return self.process_image_pdf_with_ocr(pdf_path, engine, pages)
+                return self.process_image_pdf_with_ocr(pdf_path, engine, pages,
+                                                       page_progress_callback=page_progress_callback)
             else:
                 raise PDFProcessingError(
                     file_path=str(pdf_path),
@@ -707,6 +770,32 @@ class PDFHandler:
                     details={'suggestion': "Check system resources and PDF integrity."}
                 )
 
+    def get_pdf_info(self, pdf_path: str | Path) -> dict:
+        """
+        Get basic information about a PDF with error handling.
+
+        Args:
+            pdf_path: Path to PDF file
+
+        Returns:
+            Dictionary with PDF information
+
+        Raises:
+            PDFProcessingError: If info retrieval fails
+        """
+        try:
+            return {
+                'page_count': self.get_page_count(pdf_path),
+                'type': self.detect_pdf_type(pdf_path),
+                'path': str(pdf_path)
+            }
+        except Exception as e:
+            raise PDFProcessingError(
+                file_path=str(pdf_path),
+                operation="info retrieval",
+                original_error=e
+            )
+
 
 # Convenience functions
 def extract_text_from_pdf(pdf_path: str | Path,
@@ -724,31 +813,49 @@ def extract_text_from_pdf(pdf_path: str | Path,
     ocr_engine = OCREngine(languages=ocr_languages) if ocr_languages else OCREngine()
     handler = PDFHandler(ocr_engine=ocr_engine)
     return handler.extract_text(pdf_path)
-
-
-def get_pdf_info(pdf_path: str | Path) -> dict:
+def get_pdf_thumbnails(pdf_path: Path | str, dpi: int = 150) -> list[tuple[int, Image.Image]]:
     """
-    Get basic information about a PDF with error handling.
+    Generate thumbnails from a PDF file.
 
     Args:
         pdf_path: Path to PDF file
+        dpi: DPI for thumbnail generation (default: 150)
 
     Returns:
-        Dictionary with PDF information
+        List of (page_number, PIL Image) tuples
 
     Raises:
-        PDFProcessingError: If info retrieval fails
+        PDFProcessingError: If thumbnail generation fails
     """
+    from pathlib import Path
+
+    pdf_path = Path(pdf_path)
+    thumbnails = []
     try:
-        handler = PDFHandler()
-        return {
-            'page_count': handler.get_page_count(pdf_path),
-            'type': handler.detect_pdf_type(pdf_path),
-            'path': str(pdf_path)
-        }
+        doc = fitz.open(str(pdf_path))
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=dpi)
+            if pix is None:
+                continue
+            if PILLOW_AVAILABLE:
+                mode = "RGBA" if pix.alpha else "RGB"
+                img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+                if mode == "RGBA":
+                    img = img.convert("RGB")
+            else:
+                import numpy as _np
+                img = _np.frombuffer(pix.samples, dtype=_np.uint8).reshape(
+                    pix.height, pix.width, pix.n
+                )
+                img = Image.fromarray(img, mode='RGB' if pix.n == 3 else 'RGBA').convert('RGB')
+            thumbnails.append((page_num + 1, img))
+        doc.close()
     except Exception as e:
+        logger.error(f"Failed to generate thumbnails: {e}")
         raise PDFProcessingError(
             file_path=str(pdf_path),
-            operation="info retrieval",
+            operation="thumbnail generation",
             original_error=e
         )
+    return thumbnails

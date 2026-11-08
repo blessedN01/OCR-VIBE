@@ -19,6 +19,18 @@ from src.exceptions import (
 )
 from src.ocr_engine import BaseOCREngine, EngineRegistry, OCREngine, get_available_engines
 
+# Successful tesseract runtime probe result. Tests that patch
+# TESSERACT_AVAILABLE=True also mock this so the real binary + tessdata
+# are not required in the test environment.
+_MOCK_TESSERACT_RUNTIME = {
+    'binary': 'mock',
+    'tessdata_dir': 'mock',
+    'binary_ok': True,
+    'tessdata_ok': True,
+    'missing_languages': [],
+    'ok': True,
+}
+
 
 class TestOCREngine:
     """Tests for the OCREngine class."""
@@ -27,7 +39,8 @@ class TestOCREngine:
         """Test OCREngine initializes with default values."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine()
             assert engine.languages == ['en']
             assert engine.confidence_threshold == 0.5
@@ -38,7 +51,8 @@ class TestOCREngine:
         """Test OCREngine initializes with custom values."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine(
                 languages=['en', 'fr'],
                 confidence_threshold=0.7,
@@ -64,7 +78,8 @@ class TestOCREngine:
         """Test confidence threshold setter validates range."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine()
             engine.set_confidence_threshold(0.8)
             assert engine.confidence_threshold == 0.8
@@ -79,7 +94,8 @@ class TestOCREngine:
         """Test get_supported_languages returns a copy."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine(languages=['en', 'fr'])
             langs = engine.get_supported_languages()
             assert langs == ['en', 'fr']
@@ -99,7 +115,8 @@ class TestOCREngine:
         """Test language code mapping to PaddleOCR format."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine(languages=['en'])
             assert engine._map_to_paddleocr_lang(['en']) == 'en'
             assert engine._map_to_paddleocr_lang(['fr']) == 'fr'
@@ -117,7 +134,8 @@ class TestPostProcessing:
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
              patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
-             patch('src.ocr_engine.SPELLCHECKER_AVAILABLE', False):
+             patch('src.ocr_engine.SPELLCHECKER_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine(languages=['fr'])  # Non-English triggers universal
             text = "Hellooo worlddd"
             result = engine.post_process_text(text, ['fr'])
@@ -129,7 +147,8 @@ class TestPostProcessing:
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
              patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
-             patch('src.ocr_engine.SPELLCHECKER_AVAILABLE', False):
+             patch('src.ocr_engine.SPELLCHECKER_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine(languages=['fr'])
             text = "Hello    world   test"
             result = engine.post_process_text(text, ['fr'])
@@ -139,7 +158,8 @@ class TestPostProcessing:
         """Test post-processing handles empty text."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', False), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engine = OCREngine()
             assert engine.post_process_text("", ['en']) == ""
             assert engine.post_process_text("   ", ['en']) == "   "
@@ -213,6 +233,131 @@ class TestEngineRegistry:
         EngineRegistry.discover()  # Should not raise
         assert len(EngineRegistry.get_all()) == 0
 
+    def test_discover_no_allowlist_blocks_plugins(self, tmp_path):
+        """Test that plugins are blocked when no allowlist exists."""
+        EngineRegistry.clear()
+        EngineRegistry._allowed_plugins = set()
+        EngineRegistry._hash_store = {}
+
+        # Create a fake engines directory
+        engines_dir = tmp_path / '.ocr-vibe' / 'engines'
+        engines_dir.mkdir(parents=True)
+
+        # Create a minimal plugin file
+        plugin_file = engines_dir / 'test_plugin.py'
+        plugin_file.write_text("from src.ocr_engine import BaseOCREngine\n")
+
+        with patch('pathlib.Path.home', return_value=tmp_path):
+            EngineRegistry.discover()
+
+        # Should not load any plugins without allowlist
+        assert len(EngineRegistry.get_all()) == 0
+
+    def test_add_remove_allowlist(self, tmp_path):
+        """Test adding and removing plugins from allowlist."""
+        EngineRegistry.clear()
+        EngineRegistry._allowed_plugins = set()
+        EngineRegistry._hash_store = {}
+
+        # Create a test plugin file
+        engines_dir = tmp_path / '.ocr-vibe' / 'engines'
+        engines_dir.mkdir(parents=True)
+        plugin_file = engines_dir / 'my_engine.py'
+        plugin_file.write_text("# test plugin\n")
+
+        # Add to allowlist
+        EngineRegistry.add_to_allowlist('my_engine', str(plugin_file))
+        assert 'my_engine' in EngineRegistry._allowed_plugins
+        assert 'my_engine' in EngineRegistry._hash_store
+
+        # Remove from allowlist
+        EngineRegistry.remove_from_allowlist('my_engine')
+        assert 'my_engine' not in EngineRegistry._allowed_plugins
+        assert 'my_engine' not in EngineRegistry._hash_store
+
+    def test_hash_verification(self, tmp_path):
+        """Test hash verification catches tampered files."""
+        EngineRegistry.clear()
+        EngineRegistry._allowed_plugins = {'test_plugin'}
+        EngineRegistry._hash_store = {'test_plugin': 'abc123'}
+
+        # Create plugin file
+        engines_dir = tmp_path / '.ocr-vibe' / 'engines'
+        engines_dir.mkdir(parents=True)
+        plugin_file = engines_dir / 'test_plugin.py'
+        plugin_file.write_text("# tampered plugin\n")
+
+        # Should fail hash check
+        assert not EngineRegistry._verify_plugin_hash(plugin_file)
+
+    def test_hash_rejects_unknown_plugin(self, tmp_path):
+        """Test that hash verification rejects plugins with no stored hash.
+
+        An unknown plugin (not in the hash store) must be rejected, not
+        silently allowed — the allowlist is the gate, hash verification
+        must not relax that gate.
+        """
+        EngineRegistry.clear()
+        EngineRegistry._allowed_plugins = set()
+        EngineRegistry._hash_store = {}
+
+        engines_dir = tmp_path / '.ocr-vibe' / 'engines'
+        engines_dir.mkdir(parents=True)
+        plugin_file = engines_dir / 'unknown_plugin.py'
+        plugin_file.write_text("# unknown plugin\n")
+
+        assert not EngineRegistry._verify_plugin_hash(plugin_file)
+
+    def test_load_save_allowlist(self, tmp_path):
+        """Test loading and saving allowlist to disk."""
+        EngineRegistry.clear()
+        EngineRegistry._allowed_plugins = {'plugin1', 'plugin2'}
+        EngineRegistry._hash_store = {'plugin1': 'hash1', 'plugin2': 'hash2'}
+
+        allowlist_path = tmp_path / 'allowed_plugins.json'
+        with patch.object(EngineRegistry, '_allowlist_path', allowlist_path):
+            EngineRegistry.save_allowlist()
+            assert allowlist_path.exists()
+
+            # Load it back
+            EngineRegistry._allowed_plugins = set()
+            EngineRegistry._hash_store = {}
+            EngineRegistry.load_allowlist()
+
+            assert EngineRegistry._allowed_plugins == {'plugin1', 'plugin2'}
+            assert EngineRegistry._hash_store == {'plugin1': 'hash1', 'plugin2': 'hash2'}
+
+    def test_blocked_imports_in_sandbox(self, tmp_path, monkeypatch):
+        """Test that dangerous modules are blocked in plugin context."""
+        EngineRegistry.clear()
+        EngineRegistry._allowed_plugins = {'safe_plugin'}
+        EngineRegistry._hash_store = {'safe_plugin': 'dummy'}
+
+        # Create plugin that tries to import subprocess
+        engines_dir = tmp_path / '.ocr-vibe' / 'engines'
+        engines_dir.mkdir(parents=True)
+        plugin_file = engines_dir / 'safe_plugin.py'
+        plugin_file.write_text("""
+import subprocess  # This should be blocked
+from src.ocr_engine import BaseOCREngine, EngineRegistry
+
+class BadPlugin(BaseOCREngine):
+    @property
+    def name(self): return 'bad'
+    @property
+    def supported_languages(self): return ['en']
+    def initialize(self, languages, use_gpu=False, **kwargs): return True
+    def extract_text(self, image): return ('', [])
+
+EngineRegistry.register('bad', BadPlugin())
+""")
+
+        with patch('pathlib.Path.home', return_value=tmp_path):
+            # Should fail due to blocked import
+            EngineRegistry.discover()
+            # Plugin should not be registered
+            assert 'bad' not in EngineRegistry.get_all()
+
 
 class TestGetAvailableEngines:
     """Tests for get_available_engines function."""
@@ -221,7 +366,8 @@ class TestGetAvailableEngines:
         """Test get_available_engines returns correct list."""
         with patch('src.ocr_engine.EASYOCR_AVAILABLE', True), \
              patch('src.ocr_engine.TESSERACT_AVAILABLE', True), \
-             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False):
+             patch('src.ocr_engine.PADDLEOCR_AVAILABLE', False), \
+             patch('src.ocr_engine.check_tesseract_runtime', return_value=_MOCK_TESSERACT_RUNTIME):
             engines = get_available_engines()
             assert 'easyocr' in engines
             assert 'tesseract' in engines

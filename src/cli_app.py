@@ -44,7 +44,7 @@ from .pdf_handler import PDFHandler
 logger = logging.getLogger(__name__)
 
 # Version information
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 
 def parse_page_ranges(page_spec: str) -> list[int]:
@@ -85,7 +85,8 @@ class OutputFormatter:
         if metadata:
             header = f"# OCR Results\n# File: {metadata.get('file_path', 'Unknown')}\n"
             header += f"# Languages: {', '.join(metadata.get('languages', ['en']))}\n"
-            header += f"# Confidence Threshold: {metadata.get('confidence_threshold', 0.5)}\n\n"
+            header += f"# Confidence Threshold: {metadata.get('confidence_threshold', 0.5)}\n"
+            header += f"# Engine: {metadata.get('engine_used', 'auto')}\n\n"
             return header + text
         return text
 
@@ -455,6 +456,11 @@ def process_single_file(file_path: Path, ocr_engine: OCREngine, pdf_handler: PDF
             text, results = ocr_engine.extract_text(file_path, engine,
                                                     file_type='image', page_count=1)
             metadata['file_type'] = 'Image'
+
+        # Record which engine actually produced the result. When no engine is
+        # forced, extract_text picks the best available engine dynamically, so
+        # the chosen engine is only known after extraction completes.
+        metadata['engine_used'] = getattr(ocr_engine, '_last_engine_used', None) or engine or 'auto'
 
         if post_process:
             text = ocr_engine.post_process_text(text, ocr_engine.get_supported_languages())
@@ -940,25 +946,81 @@ def batch_process(batch_file, languages, confidence, output_dir, format, engine,
     pdf_handler = PDFHandler(ocr_engine=ocr_engine)
 
     successful = 0
-    if TQDM_AVAILABLE:
-        files_iter = tqdm(valid_files, desc="Processing", unit="file")
+    parallel = bool(parallel) and len(valid_files) > 1
+    if parallel:
+        cpu_count = multiprocessing.cpu_count()
+        try:
+            import psutil
+            available_memory_mb = psutil.virtual_memory().available // (1024 * 1024)
+            max_workers = min(cpu_count, available_memory_mb // 500)
+        except Exception:
+            max_workers = cpu_count
+        max_workers = max(1, max_workers)
+        logger.info(f"Processing {len(valid_files)} files in parallel with {max_workers} workers")
+
+        task_config = {
+            'languages': config.get('languages', ['en']),
+            'confidence_threshold': config.get('confidence_threshold', 0.5),
+            'use_gpu': config.get('use_gpu', False),
+            'preprocess_images': config.get('preprocess_images', True),
+            'deskew': config.get('deskew', False),
+            'clahe': config.get('clahe', False),
+            'upscale': config.get('upscale', False),
+            'remove_bg': config.get('remove_bg', False),
+            'preserve_layout': config.get('preserve_layout', False),
+            'memory_limit_mb': config.get('memory_limit_mb'),
+            'output_format': config['output_format'],
+            'post_process': config.get('post_process', False),
+            'extract_tables': config.get('extract_tables', False),
+            'searchable_pdf': config.get('searchable_pdf', False),
+        }
+
+        tasks = []
+        for file_path in valid_files:
+            tc = task_config.copy()
+            if output_dir:
+                tc['_output_file'] = output_dir / f"{file_path.stem}.{config['output_format']}"
+                if config.get('searchable_pdf', False) and file_path.suffix.lower() == '.pdf':
+                    tc['_searchable_output'] = output_dir / f"{file_path.stem}_searchable.pdf"
+                else:
+                    tc['_searchable_output'] = None
+            else:
+                tc['_output_file'] = None
+                tc['_searchable_output'] = None
+            tasks.append((file_path, tc, config['engine']))
+
+        with multiprocessing.Pool(processes=max_workers) as pool:
+            if TQDM_AVAILABLE:
+                results = list(tqdm(
+                    pool.imap(_process_single_file_task, tasks),
+                    total=len(tasks),
+                    desc="Processing",
+                    unit="file"
+                ))
+            else:
+                results = pool.map(_process_single_file_task, tasks)
+
+        successful = sum(1 for _, success in results if success)
     else:
-        files_iter = valid_files
-
-    for file_path in files_iter:
-        logger.info(f"Processing {file_path}")
-
-        if output_dir:
-            output_file = output_dir / f"{file_path.stem}.{config['output_format']}"
+        if TQDM_AVAILABLE:
+            files_iter = tqdm(valid_files, desc="Processing", unit="file")
         else:
-            output_file = None
+            files_iter = valid_files
 
-        if process_single_file(file_path, ocr_engine, pdf_handler, config['output_format'],
-                              output_file, config['engine'], config.get('post_process', False),
-                              config.get('extract_tables', False),
-                              config.get('preserve_layout', False),
-                              config.get('searchable_pdf', False)):
-            successful += 1
+        for file_path in files_iter:
+            logger.info(f"Processing {file_path}")
+
+            if output_dir:
+                output_file = output_dir / f"{file_path.stem}.{config['output_format']}"
+            else:
+                output_file = None
+
+            if process_single_file(file_path, ocr_engine, pdf_handler, config['output_format'],
+                                  output_file, config['engine'], config.get('post_process', False),
+                                  config.get('extract_tables', False),
+                                  config.get('preserve_layout', False),
+                                  config.get('searchable_pdf', False)):
+                successful += 1
 
     logger.info(f"Processed {successful}/{len(valid_files)} files successfully")
     if successful == 0:

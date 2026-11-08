@@ -111,7 +111,9 @@ class TestPDFHandler:
             with patch('builtins.open', side_effect=Exception("PyPDF2 error")):
                 mock_doc = MagicMock()
                 mock_doc.page_count = 5
-                with patch('fitz.open', return_value=mock_doc):
+                # Patch src.pdf_handler.fitz.open, not fitz.open: after import,
+                # src.pdf_handler.fitz resolves to pymupdf, not the fitz shim.
+                with patch('src.pdf_handler.fitz.open', return_value=mock_doc):
                     count = handler.get_page_count(Path("test.pdf"))
                     assert count == 5
 

@@ -269,6 +269,13 @@ This project is open source. See LICENSE file for details.
 
 ## Changelog
 
+### v2.1.0
+- Performance: lazy-load OCR engines (faster cold start)
+- Memory: stream PDF pages page-by-page (lower peak memory)
+- GUI: reduced memory monitor polling and coalesced UI updates
+- CI: added GitHub Actions with ruff/mypy/pytest and 80% coverage gate
+- Release: version bump to 2.1.0
+
 ### v2.0.0
 - Added PaddleOCR engine integration with dynamic engine selection
 - Added PDF table extraction using camelot-py

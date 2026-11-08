@@ -35,7 +35,8 @@ def _make_engine(available_engine: str = "tesseract") -> OCREngine:
          patch('src.ocr_engine.TESSERACT_AVAILABLE', tess), \
          patch('src.ocr_engine.OPENCV_AVAILABLE', True), \
          patch('src.ocr_engine.NUMPY_AVAILABLE', True), \
-         patch('src.ocr_engine.SKLEARN_AVAILABLE', True):
+         patch('src.ocr_engine.SKLEARN_AVAILABLE', True), \
+         patch('src.ocr_engine.check_tesseract_runtime'):
         return OCREngine(auto_select=False, preprocess_images=False)
 
 

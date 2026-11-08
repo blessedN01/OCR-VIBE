@@ -6,7 +6,8 @@ Tracks per-engine performance statistics for dynamic engine selection.
 Uses a UCB-style scoring formula to balance exploitation (confidence)
 with exploration of under-tried engines.
 
-Stats are stored in ~/.ocr-vibe/engine_stats.json and persisted atomically.
+Stats are stored in the application data directory (engine_stats.json) and
+persisted atomically.
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .app_info import APP_NAME_LOWER
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +38,8 @@ def _get_stats_path() -> Path:
     """
     home_dir = Path.home()
     if not home_dir or str(home_dir) in ('/', 'C:\\'):
-        return Path(tempfile.gettempdir()) / '.ocr-vibe' / 'engine_stats.json'
-    return home_dir / '.ocr-vibe' / 'engine_stats.json'
+        return Path(tempfile.gettempdir()) / f".{APP_NAME_LOWER}" / 'engine_stats.json'
+    return home_dir / f".{APP_NAME_LOWER}" / 'engine_stats.json'
 
 
 def get_stats_path() -> Path:
@@ -69,7 +72,8 @@ class EngineStatsTracker:
         Initialize the stats tracker.
 
         Args:
-            stats_path: Optional path to stats file. Defaults to ~/.ocr-vibe/engine_stats.json
+            stats_path: Optional path to stats file. Defaults to the application
+            data directory / engine_stats.json
         """
         self.stats_path = stats_path or _get_stats_path()
         self.stats: dict[str, Any] = {}

@@ -4,7 +4,7 @@ Configuration Loader Module
 
 This module provides YAML/JSON configuration file support with a layered merge strategy:
 - Project config (ocr-vibe.yaml / ocr-vibe.json): discovered by walking up from CWD to filesystem root
-- Home config (~/.ocr-vibe/config.yaml): overrides project defaults
+- Home config (app data dir / config.yaml): overrides project defaults
 - CLI flags: highest precedence, applied via apply_cli_overrides()
 
 Shallow merge is used (top-level keys only). CLI flags completely replace config values when present.
@@ -22,6 +22,7 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
+from .app_info import APP_NAME_LOWER, get_app_dir
 from .exceptions import OCRError
 
 # Configure logging
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Default configuration values
 DEFAULT_CONFIG: dict[str, Any] = {
+    'ui_language': 'en',
     'languages': ['en'],
     'confidence_threshold': 0.5,
     'output_format': 'txt',
@@ -131,14 +133,14 @@ def _get_home_config_path() -> Path | None:
     Get path to home configuration file.
 
     Returns:
-        Path to ~/.ocr-vibe/config.yaml or None if home directory unavailable
+        Path to the home config.yaml or None if home directory unavailable
     """
     home_dir = Path.home()
     if not home_dir or str(home_dir) in ('/', 'C:\\'):
         # Home directory not available or is root
         return None
 
-    home_config_dir = home_dir / '.ocr-vibe'
+    home_config_dir = home_dir / f".{APP_NAME_LOWER}"
     config_path = home_config_dir / 'config.yaml'
 
     return config_path if config_path.is_file() else None
@@ -172,7 +174,7 @@ def load_config(start_path: Path | None = None) -> dict[str, Any]:
     Precedence (lowest to highest):
     1. Defaults
     2. Project config (ocr-vibe.yaml / ocr-vibe.json)
-    3. Home config (~/.ocr-vibe/config.yaml)
+    3. Home config (app data dir / config.yaml)
     4. CLI flags (applied by caller via apply_cli_overrides)
 
     Args:
@@ -201,16 +203,79 @@ def load_config(start_path: Path | None = None) -> dict[str, Any]:
             config = _shallow_merge(config, home_config)
             logger.debug(f"Loaded home config from {home_config_path}")
         except OCRError as e:
-            logger.warning(f"Failed to load home config: {e}")
+            logger.warning(f"Failed to home config: {e}")
 
+    # Validate configuration
+    _validate_config(config)
     return config
+
+
+def _validate_config(config: dict[str, Any]) -> None:
+    """
+    Validate configuration values.
+
+    Args:
+        config: Configuration dictionary to validate
+
+    Raises:
+        ValueError: If configuration is invalid
+    """
+    # Validate confidence_threshold
+    if 'confidence_threshold' in config:
+        ct = config['confidence_threshold']
+        try:
+            ct_float = float(ct)
+        except (TypeError, ValueError):
+            raise ValueError("confidence_threshold must be a number between 0.0 and 1.0")
+        if not (0.0 <= ct_float <= 1.0):
+            raise ValueError("confidence_threshold must be between 0.0 and 1.0")
+
+    # Validate memory_limit_mb
+    if 'memory_limit_mb' in config and config['memory_limit_mb'] is not None:
+        ml = config['memory_limit_mb']
+        # Check if it's a positive integer (bool is a subclass of int, reject it)
+        if isinstance(ml, bool) or not isinstance(ml, int):
+            raise ValueError("memory_limit_mb must be a positive integer")
+        if ml <= 0:
+            raise ValueError("memory_limit_mb must be a positive integer")
+
+    # Validate languages: must be a non-empty list of strings
+    if 'languages' in config:
+        langs = config['languages']
+        if not isinstance(langs, list) or not langs:
+            raise ValueError("languages must be a non-empty list of language codes")
+        for lang in langs:
+            if not isinstance(lang, str) or not lang.strip():
+                raise ValueError("languages must be a non-empty list of language codes")
+
+    # Validate output_format against the known format set
+    if 'output_format' in config:
+        fmt = config['output_format']
+        if not isinstance(fmt, str) or fmt.lower() not in {
+            'txt', 'json', 'csv', 'md', 'docx', 'html'
+        }:
+            raise ValueError(
+                "output_format must be one of: txt, json, csv, md, docx, html"
+            )
+
+    # Validate engine against the known engine set
+    if 'engine' in config and config['engine'] is not None:
+        engine = config['engine']
+        if not isinstance(engine, str) or engine.lower() not in {
+            'easyocr', 'paddleocr', 'tesseract', 'auto'
+        }:
+            raise ValueError(
+                "engine must be one of: easyocr, paddleocr, tesseract, auto"
+            )
 
 
 def apply_cli_overrides(config: dict[str, Any], cli_args: dict[str, Any]) -> dict[str, Any]:
     """
     Apply CLI flag overrides to configuration (highest precedence).
 
-    CLI flags completely replace config values when present.
+    CLI flags completely replace config values when present. The merged
+    configuration is validated after overrides so invalid CLI values are
+    caught early with a clear error message.
 
     Args:
         config: Current configuration dictionary
@@ -218,12 +283,19 @@ def apply_cli_overrides(config: dict[str, Any], cli_args: dict[str, Any]) -> dic
 
     Returns:
         Updated configuration dictionary
+
+    Raises:
+        ValueError: If the merged configuration is invalid
     """
     updated_config = config.copy()
 
     for key, value in cli_args.items():
         if value is not None and key in SUPPORTED_CONFIG_KEYS:
             updated_config[key] = value
+
+    # Validate the merged configuration so invalid CLI values (e.g. an
+    # out-of-range confidence threshold) are rejected before use.
+    _validate_config(updated_config)
 
     return updated_config
 
@@ -242,3 +314,44 @@ def get_config_parser(start_path: Path | None = None) -> dict[str, Any]:
         Merged configuration dictionary
     """
     return load_config(start_path)
+
+
+def save_config(config: dict[str, Any], start_path: Path | None = None) -> Path | None:
+    """
+    Persist configuration to the home config file (app data dir / config.yaml).
+
+    Only keys in SUPPORTED_CONFIG_KEYS are written. The home config directory
+    is created if it does not exist. Returns the path written to, or None if
+    the home directory is unavailable.
+
+    Args:
+        config: Configuration dictionary to persist
+        start_path: Unused; kept for API symmetry with load_config
+
+    Returns:
+        Path to the written config file, or None
+    """
+    home_dir = Path.home()
+    if not home_dir or str(home_dir) in ('/', 'C:\\'):
+        return None
+
+    config_dir = home_dir / f".{APP_NAME_LOWER}"
+    config_path = config_dir / 'config.yaml'
+
+    filtered = {k: v for k, v in config.items() if k in SUPPORTED_CONFIG_KEYS}
+    if not filtered:
+        return None
+
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        if YAML_AVAILABLE:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(filtered, f, default_flow_style=False, sort_keys=True)
+        else:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(filtered, f, indent=2, ensure_ascii=False)
+        logger.debug(f"Saved config to {config_path}")
+        return config_path
+    except OSError as e:
+        logger.warning(f"Failed to save config to {config_path}: {e}")
+        return None

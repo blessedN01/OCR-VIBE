@@ -9,6 +9,7 @@ Integrates with the OCR engine via callbacks.
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import queue
 import threading
 import time
@@ -66,6 +67,7 @@ class BatchQueueManager:
         on_task_complete: Callable | None = None,
         on_queue_complete: Callable | None = None,
         on_log: Callable | None = None,
+        parallel: bool = False,
     ):
         """
         Initialize the batch queue manager.
@@ -83,6 +85,7 @@ class BatchQueueManager:
         self.ocr_engine = ocr_engine
         self.pdf_handler = pdf_handler
         self.config = config
+        self.parallel = bool(parallel or self.config.get('parallel', False))
 
         self.on_progress = on_progress or (lambda *args: None)
         self.on_status_change = on_status_change or (lambda *args: None)
@@ -217,6 +220,9 @@ class BatchQueueManager:
 
     def _process_queue(self):
         """Main processing loop for the batch queue."""
+        if self.parallel:
+            self._process_queue_parallel()
+            return
         total = len(self._tasks)
         successful = 0
         failed = 0
@@ -363,3 +369,165 @@ class BatchQueueManager:
         progress_callback(100)
         task.result_text = text
         return True
+
+    def _process_queue_parallel(self):
+        """Process all pending tasks in parallel using a capped worker pool."""
+        total = len(self._tasks)
+        successful = 0
+        failed = 0
+
+        try:
+            with self._lock:
+                pending = [
+                    tid for tid, task in self._tasks.items()
+                    if task.status == TaskStatus.PENDING
+                ]
+                for tid in pending:
+                    task = self._tasks[tid]
+                    task.status = TaskStatus.PROCESSING
+                    task.start_time = time.time()
+                self._current_task_id = pending[0] if pending else None
+
+            if not pending:
+                return
+
+            for tid in pending:
+                task = self._tasks[tid]
+                self.on_status_change(tid, TaskStatus.PROCESSING.value)
+                self.on_log(f"Processing: {task.file_path.name}")
+
+            cpu_count = multiprocessing.cpu_count()
+            try:
+                import psutil
+                available_memory_mb = psutil.virtual_memory().available // (1024 * 1024)
+                max_workers = min(cpu_count, available_memory_mb // 500)
+            except Exception:
+                max_workers = cpu_count
+            max_workers = max(1, max_workers)
+            self.on_log(f"Processing {len(pending)} files in parallel with {max_workers} workers")
+
+            tasks = []
+            for tid in pending:
+                task = self._tasks[tid]
+                task_config = {
+                    'languages': self.config.get('languages', ['en']),
+                    'confidence_threshold': self.config.get('confidence_threshold', 0.5),
+                    'use_gpu': self.config.get('use_gpu', False),
+                    'preprocess_images': self.config.get('preprocess_images', True),
+                    'deskew': self.config.get('deskew', False),
+                    'clahe': self.config.get('clahe', False),
+                    'upscale': self.config.get('upscale', False),
+                    'remove_bg': self.config.get('remove_bg', False),
+                    'preserve_layout': self.config.get('preserve_layout', False),
+                    'memory_limit_mb': self.config.get('memory_limit_mb'),
+                    'engine': self.config.get('engine'),
+                    'post_process': self.config.get('post_process', False),
+                    'extract_tables': self.config.get('extract_tables', False),
+                    'searchable_pdf': self.config.get('searchable_pdf', False),
+                }
+                tasks.append((tid, str(task.file_path), task_config))
+
+            if self._cancel_event.is_set():
+                return
+
+            with multiprocessing.Pool(processes=max_workers) as pool:
+                results = pool.map(_process_batch_file_worker, tasks)
+
+            for tid, success, text, error in results:
+                with self._lock:
+                    task = self._tasks.get(tid)
+                    if not task:
+                        continue
+                    task.end_time = time.time()
+                    if task.status == TaskStatus.PROCESSING:
+                        task.status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
+                    if success:
+                        task.result_text = text
+                        successful += 1
+                    else:
+                        task.error_message = error
+                        failed += 1
+
+                self.on_status_change(tid, task.status.value)
+                self.on_task_complete(tid, success, task.result_text)
+
+                if self._cancel_event.is_set():
+                    break
+
+        finally:
+            self._running = False
+            self._current_task_id = None
+            self.on_log(f"Batch processing finished: {successful}/{total} successful")
+            self.on_queue_complete(total, successful, failed)
+
+
+def _process_batch_file_worker(args: tuple[str, str, dict]) -> tuple[str, bool, str, str]:
+    """
+    Process a single batch file in a worker process.
+
+    Mirrors the CLI's per-file task so the worker can recreate its own
+    engine and PDF handler (shared instances are not picklable).
+
+    Args:
+        args: Tuple of (task_id, file_path, config_dict)
+
+    Returns:
+        Tuple of (task_id, success, result_text, error_message)
+    """
+    task_id, file_path_str, config = args
+    file_path = Path(file_path_str)
+    try:
+        # Absolute imports with a sys.path bootstrap: a spawned subprocess
+        # does not inherit the parent's package context, so a relative
+        # import (`from .ocr_engine`) fails with "attempted relative import
+        # with no known parent package".
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from src.ocr_engine import OCREngine
+        from src.pdf_handler import PDFHandler
+
+        ocr_engine = OCREngine(
+            languages=config.get('languages', ['en']),
+            confidence_threshold=config.get('confidence_threshold', 0.5),
+            use_gpu=config.get('use_gpu', False),
+            preprocess_images=config.get('preprocess_images', True),
+            memory_limit_mb=config.get('memory_limit_mb'),
+            deskew=config.get('deskew', False),
+            clahe=config.get('clahe', False),
+            upscale=config.get('upscale', False),
+            remove_bg=config.get('remove_bg', False),
+            preserve_layout=config.get('preserve_layout', False),
+            auto_select=config.get('auto_select', True),
+        )
+        pdf_handler = PDFHandler(ocr_engine=ocr_engine)
+
+        is_pdf = file_path.suffix.lower() == '.pdf'
+        if is_pdf:
+            text = pdf_handler.extract_text(file_path, engine=config.get('engine'))
+        else:
+            text, _results = ocr_engine.extract_text(
+                file_path, file_type='image', page_count=1
+            )
+
+        if config.get('post_process', False):
+            text = ocr_engine.post_process_text(text, config.get('languages', ['en']))
+
+        if config.get('extract_tables', False) and is_pdf:
+            try:
+                tables = pdf_handler.extract_tables(file_path)
+                if tables:
+                    table_texts = []
+                    for i, table in enumerate(tables):
+                        try:
+                            table_texts.append(f"--- Table {i + 1} ---\n{table.df.to_string(index=False)}")
+                        except Exception as table_err:
+                            logger.warning(f"Failed to render table {i + 1}: {table_err}")
+                    if table_texts:
+                        text = text + "\n\n" + "\n\n".join(table_texts)
+            except Exception as table_extract_err:
+                logger.warning(f"Table extraction failed: {table_extract_err}")
+
+        ocr_engine.cleanup()
+        return (task_id, True, text, "")
+    except Exception as e:
+        return (task_id, False, "", str(e))

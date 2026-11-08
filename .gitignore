@@ -58,3 +58,6 @@ temp/
 *.spec
 *.app
 *.deb
+.claude/
+.kilo/
+tests/
